@@ -821,6 +821,8 @@ def process_ehr_item(item, model_key="deepseek-v3-official", meta_model_key="dee
     Returns:
         Processed result from MDT consultation
     """
+    start_time = time.time()
+
     # Required fields
     qid = str(item.get("qid"))
     question = item.get("question")
@@ -843,6 +845,10 @@ def process_ehr_item(item, model_key="deepseek-v3-official", meta_model_key="dee
         question=question,
         task_type=task_type
     )
+
+    # Calculate processing time
+    processing_time = time.time() - start_time
+    result["processing_time"] = processing_time
 
     return result
 
@@ -900,11 +906,12 @@ def main():
             # Add output to the original item and save
             item_result = {
                 "qid": qid,
-                "timestamp": int(time.time()),
                 "question": item["question"],
                 "ground_truth": item.get("answer"),
                 "predicted_value": result["final_decision"]["answer"],
-                "case_history": result
+                "case_history": result,
+                "timestamp": int(time.time()),
+                "processing_time": result["processing_time"]
             }
 
             # Save individual result

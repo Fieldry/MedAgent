@@ -827,7 +827,8 @@ def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek
     # Required fields
     qid = item.get("qid")
     question = item.get("question")
-    ground_truth = item.get("answer", None)
+
+    start_time = time.time()
 
     # Initialize consultation
     mdt = MDTConsultation(
@@ -842,6 +843,10 @@ def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek
         question=question,
         task_type=task_type,
     )
+
+    # Calculate processing time
+    processing_time = time.time() - start_time
+    result["processing_time"] = processing_time
 
     return result
 
@@ -927,11 +932,12 @@ def main():
             # Add output to the original item and save
             item_result = {
                 "qid": qid,
-                "timestamp": int(time.time()),
                 "question": item["question"],
                 "ground_truth": item.get("answer"),
                 "predicted_value": result["final_decision"]["prediction"],
-                "case_history": result
+                "case_history": result,
+                "timestamp": int(time.time()),
+                "processing_time": result["processing_time"]
             }
 
             # Save individual result

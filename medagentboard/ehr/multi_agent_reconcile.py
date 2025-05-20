@@ -561,6 +561,7 @@ def process_item(item: Dict[str, Any],
     qid = item.get("qid", "unknown")
     question = item.get("question", "")
     ground_truth = item.get("answer")
+    start_time = time.time()
 
     print(f"Processing EHR item {qid}")
 
@@ -568,14 +569,19 @@ def process_item(item: Dict[str, Any],
     coordinator = ReconcileCoordinator(agent_configs, max_rounds)
     discussion_result = coordinator.run_discussion(question)
 
+    # Calculate processing time
+    processing_time = time.time() - start_time
+    discussion_result["processing_time"] = processing_time
+
     # Compile results
     result = {
         "qid": qid,
-        "timestamp": int(time.time()),
         "question": question,
         "ground_truth": ground_truth,
         "predicted_value": discussion_result["final_prediction"],
         "case_history": discussion_result,
+        "timestamp": int(time.time()),
+        "processing_time": processing_time
     }
 
     return result
