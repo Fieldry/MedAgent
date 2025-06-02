@@ -10,20 +10,13 @@ from openai import OpenAI
 import os
 import json
 from enum import Enum
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List
 import time
 import argparse
 from tqdm import tqdm
 
 from medagentboard.utils.llm_configs import LLM_MODELS_SETTINGS
 from medagentboard.utils.json_utils import load_json, save_json, preprocess_response_string
-
-
-class ClinicalSpecialty(Enum):
-    """Clinical specialty enumeration for EHR prediction tasks."""
-    CRITICAL_CARE = "Critical Care Medicine"
-    INTERNAL_MEDICINE = "Internal Medicine"
-    EMERGENCY_MEDICINE = "Emergency Medicine"
 
 
 class AgentType(Enum):
@@ -111,7 +104,6 @@ class DoctorAgent(BaseAgent):
 
     def __init__(self,
                  agent_id: str,
-                 specialty: ClinicalSpecialty,
                  model_key: str = "deepseek-v3-official"):
         """
         Initialize a doctor agent.
@@ -122,8 +114,7 @@ class DoctorAgent(BaseAgent):
             model_key: LLM model to use
         """
         super().__init__(agent_id, AgentType.DOCTOR, model_key)
-        self.specialty = specialty
-        print(f"Initializing {specialty.value} doctor agent, ID: {agent_id}, Model: {model_key}")
+        print(f"Initializing doctor agent, ID: {agent_id}, Model: {model_key}")
 
     def analyze_case(self,
                     question: str,
@@ -359,7 +350,6 @@ class MetaAgent(BaseAgent):
     def synthesize_opinions(self,
                            question: str,
                            doctor_opinions: List[Dict[str, Any]],
-                           doctor_specialties: List[ClinicalSpecialty],
                            current_round: int = 1,
                            task_type: str = "mortality") -> Dict[str, Any]:
         """
@@ -368,7 +358,6 @@ class MetaAgent(BaseAgent):
         Args:
             question: Original question with EHR data
             doctor_opinions: List of doctor opinions
-            doctor_specialties: List of corresponding doctor specialties
             current_round: Current discussion round
             task_type: Type of task (mortality or readmission)
 
@@ -401,8 +390,8 @@ class MetaAgent(BaseAgent):
 
         # Format doctors' opinions as input
         formatted_opinions = []
-        for i, (opinion, specialty) in enumerate(zip(doctor_opinions, doctor_specialties)):
-            formatted_opinion = f"Doctor {i+1} ({specialty.value}):\n"
+        for i, opinion in enumerate(doctor_opinions):
+            formatted_opinion = f"Doctor {i+1}:\n"
             formatted_opinion += f"Explanation: {opinion.get('explanation', '')}\n"
             formatted_opinion += f"Prediction: {opinion.get('prediction', '')}\n"
             formatted_opinions.append(formatted_opinion)
@@ -459,7 +448,6 @@ class MetaAgent(BaseAgent):
     def make_final_decision(self,
                            question: str,
                            doctor_reviews: List[Dict[str, Any]],
-                           doctor_specialties: List[ClinicalSpecialty],
                            current_synthesis: Dict[str, Any],
                            current_round: int,
                            max_rounds: int,
@@ -470,7 +458,6 @@ class MetaAgent(BaseAgent):
         Args:
             question: Original question with EHR data
             doctor_reviews: List of doctor reviews
-            doctor_specialties: List of corresponding doctor specialties
             current_synthesis: Current synthesized result
             current_round: Current round
             max_rounds: Maximum number of rounds
@@ -522,8 +509,8 @@ class MetaAgent(BaseAgent):
 
         # Format doctor reviews
         formatted_reviews = []
-        for i, (review, specialty) in enumerate(zip(doctor_reviews, doctor_specialties)):
-            formatted_review = f"Doctor {i+1} ({specialty.value}):\n"
+        for i, review in enumerate(doctor_reviews):
+            formatted_review = f"Doctor {i+1}:\n"
             formatted_review += f"Agree: {'Yes' if review.get('agree', False) else 'No'}\n"
             formatted_review += f"Reason: {review.get('reason', '')}\n"
             formatted_review += f"Prediction: {review.get('prediction', '')}\n"
@@ -619,9 +606,9 @@ class MDTConsultation:
         """
         self.max_rounds = max_rounds
         self.doctor_configs = doctor_configs or [
-            {"specialty": ClinicalSpecialty.CRITICAL_CARE, "model_key": "deepseek-v3-official"},
-            {"specialty": ClinicalSpecialty.INTERNAL_MEDICINE, "model_key": "deepseek-v3-official"},
-            {"specialty": ClinicalSpecialty.EMERGENCY_MEDICINE, "model_key": "deepseek-v3-official"},
+            {"model_key": "deepseek-v3-official"},
+            {"model_key": "deepseek-v3-official"},
+            {"model_key": "deepseek-v3-official"},
         ]
         self.meta_model_key = meta_model_key
 
@@ -629,9 +616,8 @@ class MDTConsultation:
         self.doctor_agents = []
         for idx, config in enumerate(self.doctor_configs, 1):
             agent_id = f"doctor_{idx}"
-            specialty = config["specialty"]
             model_key = config.get("model_key", "deepseek-v3-official")
-            doctor_agent = DoctorAgent(agent_id, specialty, model_key)
+            doctor_agent = DoctorAgent(agent_id, model_key)
             self.doctor_agents.append(doctor_agent)
 
         # Initialize meta agent
@@ -880,29 +866,21 @@ def main():
     os.makedirs(logs_dir, exist_ok=True)
 
     # Set up data path
-    data_path = f"./my_datasets/processed/ehr/{dataset_name}/ehr_timeseries_{task_type}_test.json"
+    data_path = f"./my_datasets/{dataset_name}/processed/split"
 
     # Load the data
     data = load_json(data_path)
     print(f"Loaded {len(data)} samples from {data_path}")
 
-    # Configure doctor specialties based on the task
-    doctor_specialties = [
-        ClinicalSpecialty.CRITICAL_CARE,
-        ClinicalSpecialty.INTERNAL_MEDICINE,
-        ClinicalSpecialty.EMERGENCY_MEDICINE
-    ]
-
     # Make sure we have enough specialties for all provided models
-    if len(args.doctor_models) > len(doctor_specialties):
-        print(f"Warning: More doctor models ({len(args.doctor_models)}) provided than specialties ({len(doctor_specialties)}). "
+    if len(args.doctor_models) > 3:
+        print(f"Warning: More doctor models ({len(args.doctor_models)}) provided."
               f"Extra models will not be used.")
 
     # Create doctor configurations
     doctor_configs = []
-    for i, model in enumerate(args.doctor_models[:len(doctor_specialties)]):
+    for model in args.doctor_models:
         doctor_configs.append({
-            "specialty": doctor_specialties[i],
             "model_key": model
         })
 

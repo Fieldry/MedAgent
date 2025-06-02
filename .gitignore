@@ -1,6 +1,5 @@
 my_datasets/
 logs/
-pyehr/
 prompt_*.txt
 
 *.json
