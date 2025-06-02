@@ -6,14 +6,15 @@ This code adapts a medical QA multi-agent framework to process EHR time series d
 and make predictions for mortality and readmission probability.
 """
 
-from openai import OpenAI
 import os
 import json
-from enum import Enum
-from typing import Dict, Any, List
 import time
 import argparse
 from tqdm import tqdm
+from enum import Enum
+from typing import Dict, Any, List
+
+from openai import OpenAI
 
 from medagentboard.utils.llm_configs import LLM_MODELS_SETTINGS
 from medagentboard.utils.json_utils import load_json, save_json, preprocess_response_string
@@ -104,17 +105,19 @@ class DoctorAgent(BaseAgent):
 
     def __init__(self,
                  agent_id: str,
+                 specialty: str, # 新增 specialty 参数
                  model_key: str = "deepseek-v3-official"):
         """
         Initialize a doctor agent.
 
         Args:
             agent_id: Unique identifier for the doctor
-            specialty: Doctor's clinical specialty
+            specialty: Doctor's clinical specialty (string)
             model_key: LLM model to use
         """
         super().__init__(agent_id, AgentType.DOCTOR, model_key)
-        print(f"Initializing doctor agent, ID: {agent_id}, Model: {model_key}")
+        self.specialty = specialty # 设置 specialty
+        print(f"Initializing doctor agent, ID: {agent_id}, Specialty: {specialty}, Model: {model_key}")
 
     def analyze_case(self,
                     question: str,
@@ -129,12 +132,12 @@ class DoctorAgent(BaseAgent):
         Returns:
             Dictionary containing analysis results and prediction
         """
-        print(f"Doctor {self.agent_id} ({self.specialty.value}) analyzing case with model: {self.model_key}")
+        print(f"Doctor {self.agent_id} ({self.specialty}) analyzing case with model: {self.model_key}")
 
         # Prepare system message to guide the doctor's analysis
         system_message = {
             "role": "system",
-            "content": f"You are a physician specializing in {self.specialty.value}. "
+            "content": f"You are a physician specializing in {self.specialty}. " # 使用 self.specialty
                       f"Analyze the provided time series EHR data and make a clinical prediction. "
                       f"Your output should be in JSON format, including 'explanation' (detailed reasoning) and "
                       f"'prediction' (a floating-point number between 0 and 1 representing probability) fields."
@@ -170,7 +173,7 @@ class DoctorAgent(BaseAgent):
                 try:
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
-                except:
+                except ValueError: # Changed bare except to ValueError for specificity
                     result["prediction"] = 0.5  # Default fallback
             else:
                 result["prediction"] = 0.5
@@ -210,7 +213,7 @@ class DoctorAgent(BaseAgent):
         Returns:
             Dictionary containing agreement status and possible rebuttal
         """
-        print(f"Doctor {self.agent_id} ({self.specialty.value}) reviewing synthesis with model: {self.model_key}")
+        print(f"Doctor {self.agent_id} ({self.specialty}) reviewing synthesis with model: {self.model_key}")
 
         # Get current round
         current_round = len(self.memory) // 2 + 1
@@ -225,7 +228,7 @@ class DoctorAgent(BaseAgent):
         # Prepare system message for review
         system_message = {
             "role": "system",
-            "content": f"You are a physician specializing in {self.specialty.value}, participating in round {current_round} of a multidisciplinary team consultation. "
+            "content": f"You are a physician specializing in {self.specialty}, participating in round {current_round} of a multidisciplinary team consultation. "
                       f"Review the synthesis of multiple doctors' opinions and determine if you agree with the conclusion. "
                       f"Consider your previous analysis and the Coordinator's synthesized opinion to decide whether to agree or provide a different perspective. "
                       f"Your output should be in JSON format, including 'agree' (boolean or 'yes'/'no'), 'reason' (rationale for your decision), "
@@ -278,7 +281,7 @@ class DoctorAgent(BaseAgent):
                 try:
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
-                except:
+                except ValueError: # Changed bare except to ValueError for specificity
                     result["prediction"] = 0.5  # Default fallback
             else:
                 result["prediction"] = 0.5
@@ -309,7 +312,7 @@ class DoctorAgent(BaseAgent):
                         # Ensure within 0-1 range
                         pred_value = max(0.0, min(1.0, pred_value))
                         result["prediction"] = pred_value
-                    except:
+                    except ValueError: # Changed bare except to ValueError for specificity
                         result["prediction"] = 0.5  # Default fallback
 
             # Ensure required fields
@@ -420,7 +423,7 @@ class MetaAgent(BaseAgent):
                 try:
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
-                except:
+                except ValueError: # Changed bare except to ValueError for specificity
                     result["prediction"] = 0.5  # Default fallback
             else:
                 result["prediction"] = 0.5
@@ -509,8 +512,9 @@ class MetaAgent(BaseAgent):
 
         # Format doctor reviews
         formatted_reviews = []
-        for i, review in enumerate(doctor_reviews):
-            formatted_review = f"Doctor {i+1}:\n"
+        for i, review_item in enumerate(doctor_reviews): # Changed variable name to avoid confusion with dict.get('review')
+            review = review_item.get('review', {}) # Get the nested review dictionary
+            formatted_review = f"Doctor {i+1} ({review_item.get('specialty', 'Unknown')}):\n" # Include specialty in review summary
             formatted_review += f"Agree: {'Yes' if review.get('agree', False) else 'No'}\n"
             formatted_review += f"Reason: {review.get('reason', '')}\n"
             formatted_review += f"Prediction: {review.get('prediction', '')}\n"
@@ -561,7 +565,7 @@ class MetaAgent(BaseAgent):
                 try:
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
-                except:
+                except ValueError: # Changed bare except to ValueError for specificity
                     result["prediction"] = 0.5  # Default fallback
             else:
                 result["prediction"] = 0.5
@@ -606,29 +610,30 @@ class MDTConsultation:
         """
         self.max_rounds = max_rounds
         self.doctor_configs = doctor_configs or [
-            {"model_key": "deepseek-v3-official"},
-            {"model_key": "deepseek-v3-official"},
-            {"model_key": "deepseek-v3-official"},
-        ]
+            {"specialty": "General Medicine", "model_key": "deepseek-v3-official"},
+            {"specialty": "General Medicine", "model_key": "deepseek-v3-official"},
+            {"specialty": "General Medicine", "model_key": "deepseek-v3-official"},
+        ] # Added default specialties for clarity
+
         self.meta_model_key = meta_model_key
 
         # Initialize doctor agents with different specialties and models
         self.doctor_agents = []
+        self.doctor_specialties_for_logging = []
         for idx, config in enumerate(self.doctor_configs, 1):
             agent_id = f"doctor_{idx}"
             model_key = config.get("model_key", "deepseek-v3-official")
-            doctor_agent = DoctorAgent(agent_id, model_key)
+            specialty = config.get("specialty", "General Medicine")
+            doctor_agent = DoctorAgent(agent_id, specialty, model_key)
             self.doctor_agents.append(doctor_agent)
+            self.doctor_specialties_for_logging.append(specialty)
 
         # Initialize meta agent
         self.meta_agent = MetaAgent("meta", meta_model_key)
 
-        # Store doctor specialties for easy access
-        self.doctor_specialties = [doctor.specialty for doctor in self.doctor_agents]
-
         # Prepare doctor info for logging
         doctor_info = ", ".join([
-            f"{config['specialty'].value} ({config.get('model_key', 'default')})"
+            f"{config.get('specialty', 'General Medicine')} ({config.get('model_key', 'default')})"
             for config in self.doctor_configs
         ])
         print(f"Initialized MDT consultation, max_rounds={max_rounds}, doctors: [{doctor_info}], meta_model={meta_model_key}")
@@ -672,12 +677,17 @@ class MDTConsultation:
             # Step 1: Each doctor analyzes the case
             doctor_opinions = []
             for i, doctor in enumerate(self.doctor_agents):
-                print(f"Doctor {i+1} ({doctor.specialty.value}) analyzing case")
+                print(f"Doctor {i+1} ({doctor.specialty}) analyzing case")
                 opinion = doctor.analyze_case(question, task_type)
-                doctor_opinions.append(opinion)
+                # Store original opinion with doctor details for meta agent to access
+                doctor_opinions.append({
+                    "doctor_id": doctor.agent_id,
+                    "specialty": doctor.specialty,
+                    "opinion": opinion
+                })
                 round_data["opinions"].append({
                     "doctor_id": doctor.agent_id,
-                    "specialty": doctor.specialty.value,
+                    "specialty": doctor.specialty,
                     "opinion": opinion
                 })
 
@@ -686,7 +696,7 @@ class MDTConsultation:
             # Step 2: Meta agent synthesizes opinions
             print("Meta agent synthesizing opinions")
             synthesis = self.meta_agent.synthesize_opinions(
-                question, doctor_opinions, self.doctor_specialties,
+                question, doctor_opinions,
                 current_round, task_type
             )
             round_data["synthesis"] = synthesis
@@ -697,12 +707,17 @@ class MDTConsultation:
             doctor_reviews = []
             all_agree = True
             for i, doctor in enumerate(self.doctor_agents):
-                print(f"Doctor {i+1} ({doctor.specialty.value}) reviewing synthesis")
+                print(f"Doctor {i+1} ({doctor.specialty}) reviewing synthesis")
                 review = doctor.review_synthesis(question, synthesis, task_type)
-                doctor_reviews.append(review)
+                # Store original review with doctor details for meta agent to access
+                doctor_reviews.append({
+                    "doctor_id": doctor.agent_id,
+                    "specialty": doctor.specialty,
+                    "review": review
+                })
                 round_data["reviews"].append({
                     "doctor_id": doctor.agent_id,
-                    "specialty": doctor.specialty.value,
+                    "specialty": doctor.specialty,
                     "review": review
                 })
 
@@ -716,7 +731,7 @@ class MDTConsultation:
 
             # Step 4: Meta agent makes decision based on reviews
             decision = self.meta_agent.make_final_decision(
-                question, doctor_reviews, self.doctor_specialties,
+                question, doctor_reviews,
                 synthesis, current_round, self.max_rounds, task_type
             )
 
@@ -733,7 +748,10 @@ class MDTConsultation:
 
         # If no final decision yet, use the last decision
         if not final_decision:
-            final_decision = decision
+            # Fallback if loop didn't set final_decision for some reason
+            # (e.g., if max_rounds was 0, though current_round starts at 0 and increments)
+            final_decision = decision if 'decision' in locals() else {"explanation": "No decision could be made.", "prediction": 0.5}
+
 
         print(f"Final prediction: {final_decision.get('prediction', '')}")
 
@@ -783,7 +801,7 @@ def parse_structured_output(response_text: str) -> Dict[str, Any]:
                         # Ensure within 0-1 range
                         pred_value = max(0.0, min(1.0, pred_value))
                         result[key] = pred_value
-                    except:
+                    except ValueError: # Changed bare except to ValueError for specificity
                         result[key] = 0.5  # Default fallback
                 else:
                     result[key] = value
@@ -861,6 +879,17 @@ def main():
         print("Error: The tjh dataset doesn't contain readmission task data.")
         return
 
+    # Define the mapping for specialties based on dataset
+    SPECIALTIES_MAP = {
+        "esrd": "End-Stage Renal Disease",
+        "cdsl": "COVID-19",
+        "mimic-iv": "Intensive Care",
+        "tjh": "COVID-19",
+    }
+
+    dataset_specialty = SPECIALTIES_MAP.get(dataset_name, "General Medicine")
+    print(f"Doctors' specialty for this dataset ({dataset_name}): {dataset_specialty}")
+
     # Create logs directory structure
     logs_dir = os.path.join("logs", "ehr", dataset_name, task_type, method)
     os.makedirs(logs_dir, exist_ok=True)
@@ -872,19 +901,21 @@ def main():
     data = load_json(data_path)
     print(f"Loaded {len(data)} samples from {data_path}")
 
-    # Make sure we have enough specialties for all provided models
-    if len(args.doctor_models) > 3:
-        print(f"Warning: More doctor models ({len(args.doctor_models)}) provided."
-              f"Extra models will not be used.")
-
-    # Create doctor configurations
+    # Create doctor configurations, assigning the determined specialty
     doctor_configs = []
+    num_doctors_to_create = len(args.doctor_models)
+
+    if len(args.doctor_models) > 3:
+        print(f"Warning: More doctor models ({len(args.doctor_models)}) provided than typical (3)."
+              f"All provided models will be used, each assigned the dataset specialty.")
+
     for model in args.doctor_models:
         doctor_configs.append({
-            "model_key": model
+            "model_key": model,
+            "specialty": dataset_specialty # 将由数据集定义的专业分配给每个医生
         })
 
-    print(f"Configuring {len(doctor_configs)} doctors with models: {args.doctor_models[:len(doctor_configs)]}")
+    print(f"Configuring {len(doctor_configs)} doctors with models: {[cfg['model_key'] for cfg in doctor_configs]} and specialty: {dataset_specialty}")
 
     # Process each item
     for item in tqdm(data, desc=f"Running MDT consultation on {dataset_name} {task_type}"):
@@ -923,6 +954,12 @@ def main():
 
         except Exception as e:
             print(f"Error processing item {qid}: {e}")
+            # Optionally, save an error log for the QID
+            error_log_path = os.path.join(logs_dir, f"ehr_timeseries_{qid_str}-error.log")
+            with open(error_log_path, "w") as f:
+                f.write(f"Error processing {qid}: {e}\n")
+                import traceback
+                traceback.print_exc(file=f)
 
 
 if __name__ == "__main__":
