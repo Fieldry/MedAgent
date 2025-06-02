@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "lightning>=2.5.1.post0",
     "openai>=1.69.0",
     "pandas>=2.2.3",
     "pyarrow>=20.0.0",
