@@ -1,10 +1,9 @@
-from typing import Dict, List, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.utils.rnn as rnn_utils
 
-from models.utils import get_last_visit
+from pyehr.models.utils import get_last_visit
 
 
 class Sparsemax(nn.Module):
@@ -244,6 +243,7 @@ class AdaCareLayer(nn.Module):
             last_output = self.nn_dropout(last_output)
         return last_output, output, inputatt, convatt
 
+
 class AdaCare(nn.Module):
     def __init__(
         self,
@@ -280,11 +280,14 @@ class AdaCare(nn.Module):
         x: torch.tensor,
         mask: Optional[torch.tensor] = None,
     ):
-        batch_size, time_steps, _ = x.size()
-        out = torch.zeros((batch_size, time_steps, self.hidden_dim))
-        for cur_time in range(time_steps):
-            cur_x = x[:, :cur_time+1, :]
-            cur_mask = mask[:, :cur_time+1]
-            cur_out, _, _, _ = self.adacare_layer(cur_x, cur_mask)
-            out[:, cur_time, :] = cur_out
-        return out
+        out, _, attn, _ = self.adacare_layer(x, mask)
+        return out, attn[:, -1]
+
+
+if __name__ == "__main__":
+    x = torch.randn(2, 13, 75)
+    mask = torch.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
+    model = AdaCare(75)
+    out, attn = model(x, mask)
+    print(out.shape)
+    print(attn.shape)

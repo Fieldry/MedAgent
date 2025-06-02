@@ -1,10 +1,10 @@
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 
-from models.utils import generate_mask, get_last_visit
+from pyehr.models.utils import generate_mask, get_last_visit
 
 
 class FinalAttentionQKV(nn.Module):
@@ -616,7 +616,8 @@ class ConCareLayer(nn.Module):
         )[0]
 
         weighted_contexts, a = self.FinalAttentionQKV(contexts)
-        return weighted_contexts, DeCov_loss
+        return weighted_contexts, a, DeCov_loss
+
 
 class ConCare(nn.Module):
     def __init__(
@@ -661,18 +662,10 @@ class ConCare(nn.Module):
                 patient embedding.
         """
         # rnn will only apply dropout between layers
-        batch_size, time_steps, _ = x.size()
-        out = torch.zeros((batch_size, time_steps, self.hidden_dim))
-        decov_loss = 0
-        for cur_time in range(time_steps):
-            cur_x = x[:, :cur_time+1, :]
-            cur_mask = mask[:, :cur_time+1]
-            cur_out, decov = self.concare_layer(cur_x, static, cur_mask)
-            out[:, cur_time, :] = cur_out
-            decov_loss += decov
-        decov_loss /= time_steps
+        labtest_dim = x.shape[2]
+        out, attn, decov_loss = self.concare_layer(x, static, mask)
         out = self.dropout(out)
-        return out, decov_loss
+        return out, attn[:, :labtest_dim], decov_loss
 
 
 if __name__ == "__main__":
@@ -683,12 +676,10 @@ if __name__ == "__main__":
     hidden_dim = 128
     lab = torch.randn([bs, max_len, lab_dim])
     static = torch.randn([bs, demo_dim])
-    lens = torch.tensor([max_len , 2, 9])
+    lens = torch.tensor([max_len, 2, 9])
     mask = generate_mask(lens)
     model = ConCare(lab_dim, demo_dim, hidden_dim, 4, 325, 0.5)
-    out, decov_loss  = model(lab, static, mask)
+    out, attn, decov_loss = model(lab, static, mask)
     print(out.shape)
-    # x = torch.randn(2, 13, 75)
-    # lens = torch.tensor([13,2])
-    # x_lab, x_demo, mask = x[:, 0, :2], x[:, :, 2:], generate_mask(lens)
-    # print(x_lab.shape, x_demo.shape, mask.shape)
+    print(attn.shape)
+    print(decov_loss)

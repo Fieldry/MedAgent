@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -93,9 +93,11 @@ class RETAINLayer(nn.Module):
         rx = self.reverse_x(x, lengths)
         attn_alpha = self.compute_alpha(rx, lengths)
         attn_beta = self.compute_beta(rx, lengths)
-        c = attn_alpha * attn_beta * x  # (patient, sequence len, input_dim)
+        a = attn_alpha * attn_beta # (patient, sequence len, input_dim)
+        c = a * x  # (patient, sequence len, input_dim)
         c = torch.sum(c, dim=1)  # (patient, input_dim)
-        return c
+        return c, a
+
 
 class RETAIN(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, dropout: float = 0.1, **kwargs):
@@ -105,14 +107,17 @@ class RETAIN(nn.Module):
         self.dropout = dropout
         self.retain_layer = RETAINLayer(input_dim, dropout)
         self.proj = nn.Linear(input_dim, hidden_dim)
-    
+
     def forward(self, x: torch.tensor, mask: Optional[torch.tensor] = None):
-        batch_size, time_steps, _ = x.size()
-        out = torch.zeros((batch_size, time_steps, self.hidden_dim))
-        for cur_time in range(time_steps):
-            cur_x = x[:, :cur_time+1, :]
-            cur_mask = mask[:, :cur_time+1]
-            cur_out = self.retain_layer(cur_x, cur_mask)
-            cur_out = self.proj(cur_out)
-            out[:, cur_time, :] = cur_out
-        return out
+        out, attn = self.retain_layer(x, mask)
+        out = self.proj(out)
+        return out, attn
+
+
+if __name__ == "__main__":
+    x = torch.randn(2, 13, 75)
+    mask = torch.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
+    model = RETAIN(75, 128)
+    out, attn = model(x, mask)
+    print(out.shape)
+    print(attn.shape)
