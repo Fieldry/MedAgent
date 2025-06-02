@@ -111,7 +111,7 @@ class RETAIN(nn.Module):
     def forward(self, x: torch.tensor, mask: Optional[torch.tensor] = None):
         out, attn = self.retain_layer(x, mask)
         out = self.proj(out)
-        return out, attn
+        return out, attn[:, -1]
 
 
 if __name__ == "__main__":

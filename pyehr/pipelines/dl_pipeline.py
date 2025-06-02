@@ -137,7 +137,8 @@ class DlPipeline(L.LightningModule):
         preds = torch.cat([x['preds'] for x in self.test_step_outputs]).detach().cpu()
         labels = torch.cat([x['labels'] for x in self.test_step_outputs]).detach().cpu()
         pids = []
-        pids.extend([x['pids'] for x in self.test_step_outputs])
+        for x in self.test_step_outputs:
+            pids.extend(x['pids'])
         attns = torch.cat([x['attn'] for x in self.test_step_outputs]).detach().cpu()
         if attns.size(1) > self.lab_dim:
             attns = attns[:, self.demo_dim:]
