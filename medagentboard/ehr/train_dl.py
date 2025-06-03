@@ -94,7 +94,7 @@ def parse_args():
 
     # Basic configurations
     parser.add_argument('--model', '-m', type=str, nargs='+', required=True, help='Model name')
-    parser.add_argument('--dataset', '-d', type=str, required=True, help='Dataset name', choices=['tjh', 'mimic-iv'])
+    parser.add_argument('--dataset', '-d', type=str, required=True, help='Dataset name', choices=['tjh', 'mimic-iv', 'esrd'])
     parser.add_argument('--task', '-t', type=str, required=True, help='Task name', choices=['mortality', 'readmission', 'los'])
 
     # Model and training hyperparameters
@@ -141,8 +141,11 @@ if __name__ == "__main__":
     elif args.dataset == 'mimic-iv':
         config['demo_dim'] = 2
         config['lab_dim'] = 42
+    elif args.dataset == 'esrd':
+        config['demo_dim'] = 0
+        config['lab_dim'] = 17
     else:
-        raise ValueError("Unsupported dataset. Choose either 'tjh' or 'mimic-iv'.")
+        raise ValueError("Unsupported dataset. Choose either 'tjh' or 'mimic-iv' or 'esrd'.")
 
     perf_all_df = pd.DataFrame()
     for model in args.model:
