@@ -139,9 +139,9 @@ class DoctorAgent(BaseAgent):
         system_message = {
             "role": "system",
             "content": f"You are a physician specializing in {self.specialty}. " # 使用 self.specialty
-                      f"Analyze the provided time series EHR data and make a clinical prediction. "
-                      f"Your output should be in JSON format, including 'explanation' (detailed reasoning) and "
-                      f"'prediction' (a floating-point number between 0 and 1 representing probability) fields."
+                f"Analyze the provided time series EHR data and make a clinical prediction. "
+                f"Your output should be in JSON format, including 'explanation' (detailed reasoning) and "
+                f"'prediction' (a floating-point number between 0 and 1 representing probability) fields."
         }
 
         if task_type == "mortality":
@@ -230,10 +230,10 @@ class DoctorAgent(BaseAgent):
         system_message = {
             "role": "system",
             "content": f"You are a physician specializing in {self.specialty}, participating in round {current_round} of a multidisciplinary team consultation. "
-                      f"Review the synthesis of multiple doctors' opinions and determine if you agree with the conclusion. "
-                      f"Consider your previous analysis and the Coordinator's synthesized opinion to decide whether to agree or provide a different perspective. "
-                      f"Your output should be in JSON format, including 'agree' (boolean or 'yes'/'no'), 'reason' (rationale for your decision), "
-                      f"and 'prediction' (your suggested prediction if you disagree; if you agree, you can repeat the synthesized prediction) fields."
+                f"Review the synthesis of multiple doctors' opinions and determine if you agree with the conclusion. "
+                f"Consider your previous analysis and the Coordinator's synthesized opinion to decide whether to agree or provide a different perspective. "
+                f"Your output should be in JSON format, including 'agree' (boolean or 'yes'/'no'), 'reason' (rationale for your decision), "
+                f"and 'prediction' (your suggested prediction if you disagree; if you agree, you can repeat the synthesized prediction) fields."
         }
 
         # Add task-specific context
@@ -257,12 +257,12 @@ class DoctorAgent(BaseAgent):
         user_message = {
             "role": "user",
             "content": f"Original data and task: {question[:500]}...\n\n"
-                      f"{own_analysis_text}"
-                      f"{synthesis_text}\n\n"
-                      f"Do you agree with this synthesized result? Please provide your response in JSON format, including:\n"
-                      f"1. 'agree': 'yes'/'no'\n"
-                      f"2. 'reason': Your rationale for agreeing or disagreeing\n"
-                      f"3. 'prediction': Your supported prediction (can be the synthesized prediction if you agree, or your own suggested prediction if you disagree)"
+                f"{own_analysis_text}"
+                f"{synthesis_text}\n\n"
+                f"Do you agree with this synthesized result? Please provide your response in JSON format, including:\n"
+                f"1. 'agree': 'yes'/'no'\n"
+                f"2. 'reason': Your rationale for agreeing or disagreeing\n"
+                f"3. 'prediction': Your supported prediction (can be the synthesized prediction if you agree, or your own suggested prediction if you disagree)"
         }
 
         # Call LLM with retry mechanism
@@ -374,10 +374,10 @@ class MetaAgent(BaseAgent):
         system_message = {
             "role": "system",
             "content": f"You are a medical consensus coordinator facilitating round {current_round} of a multidisciplinary team consultation. "
-                      "Synthesize the opinions of multiple specialist doctors into a coherent analysis and conclusion. "
-                      "Consider each doctor's expertise and perspective, and weigh their opinions accordingly. "
-                      "Your output should be in JSON format, including 'explanation' (synthesized reasoning) and "
-                      "'prediction' (consensus probability value between 0 and 1) fields."
+                "Synthesize the opinions of multiple specialist doctors into a coherent analysis and conclusion. "
+                "Consider each doctor's expertise and perspective, and weigh their opinions accordingly. "
+                "Your output should be in JSON format, including 'explanation' (synthesized reasoning) and "
+                "'prediction' (consensus probability value between 0 and 1) fields."
         }
 
         # Add task-specific context
@@ -406,9 +406,9 @@ class MetaAgent(BaseAgent):
         user_message = {
             "role": "user",
             "content": f"EHR data and task: {question[:500]}...\n\n"
-                      f"Round {current_round} Doctors' Opinions:\n{opinions_text}\n\n"
-                      f"Please synthesize these opinions into a consensus view. Provide your synthesis in JSON format, including "
-                      f"'explanation' (comprehensive reasoning) and 'prediction' (probability value between 0 and 1) fields."
+                f"Round {current_round} Doctors' Opinions:\n{opinions_text}\n\n"
+                f"Please synthesize these opinions into a consensus view. Provide your synthesis in JSON format, including "
+                f"'explanation' (comprehensive reasoning) and 'prediction' (probability value between 0 and 1) fields."
         }
 
         # Call LLM with retry mechanism
@@ -808,12 +808,11 @@ class MDTConsultation:
                     # If max rounds reached, use the last round's decision as final
                     final_decision = decision
 
-        # If no final decision yet, use the last decision
+        # 如果没有最终决策，兜底
         if not final_decision:
             # Fallback if loop didn't set final_decision for some reason
             # (e.g., if max_rounds was 0, though current_round starts at 0 and increments)
             final_decision = decision if 'decision' in locals() else {"explanation": "No decision could be made.", "prediction": 0.5}
-
 
         print(f"Final prediction: {final_decision.get('prediction', '')}")
 
@@ -940,8 +939,8 @@ def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek
 
 def main():
     parser = argparse.ArgumentParser(description="Run MDT consultation on EHR datasets")
-    parser.add_argument("--dataset", type=str, required=True, choices=["mimic-iv", "tjh"],
-                       help="Specify dataset name: mimic-iv or tjh")
+    parser.add_argument("--dataset", type=str, required=True, choices=["mimic-iv", "tjh", "esrd"],
+                       help="Specify dataset name: mimic-iv or tjh or esrd")
     parser.add_argument("--task", type=str, required=True, choices=["mortality", "readmission"],
                        help="Prediction task: mortality or readmission")
     parser.add_argument("--meta_model", type=str, default="deepseek-v3-official",
@@ -958,8 +957,8 @@ def main():
     print(f"Dataset: {dataset_name}, Task: {task_type}")
 
     # Validate the dataset and task combination
-    if dataset_name == "tjh" and task_type == "readmission":
-        print("Error: The tjh dataset doesn't contain readmission task data.")
+    if dataset_name in ["tjh", "esrd"] and task_type == "readmission":
+        print(f"Error: The {dataset_name} dataset doesn't contain readmission task data.")
         return
 
     # Define the mapping for specialties based on dataset
@@ -974,7 +973,7 @@ def main():
     print(f"Doctors' specialty for this dataset ({dataset_name}): {dataset_specialty}")
 
     # Create logs directory structure
-    logs_dir = os.path.join("logs", "ehr", dataset_name, task_type, method)
+    logs_dir = os.path.join("logs", dataset_name, task_type, method)
     os.makedirs(logs_dir, exist_ok=True)
 
     # Set up data path
@@ -986,7 +985,6 @@ def main():
 
     # Create doctor configurations, assigning the determined specialty
     doctor_configs = []
-    num_doctors_to_create = len(args.doctor_models)
 
     if len(args.doctor_models) > 3:
         print(f"Warning: More doctor models ({len(args.doctor_models)}) provided than typical (3)."
@@ -1033,12 +1031,12 @@ def main():
             }
 
             # Save individual result
-            save_json(item_result, os.path.join(logs_dir, f"ehr_timeseries_{qid_str}-result.json"))
+            save_json(item_result, os.path.join(logs_dir, f"ehr_{qid_str}-result.json"))
 
         except Exception as e:
             print(f"Error processing item {qid}: {e}")
             # Optionally, save an error log for the QID
-            error_log_path = os.path.join(logs_dir, f"ehr_timeseries_{qid_str}-error.log")
+            error_log_path = os.path.join(logs_dir, f"ehr_{qid_str}-error.log")
             with open(error_log_path, "w") as f:
                 f.write(f"Error processing {qid}: {e}\n")
                 import traceback
