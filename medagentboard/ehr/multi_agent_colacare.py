@@ -24,6 +24,7 @@ class AgentType(Enum):
     """Agent type enumeration."""
     DOCTOR = "Doctor"
     META = "Coordinator"
+    EVALUATOR = "Evaluator"
 
 
 class BaseAgent:
@@ -38,7 +39,7 @@ class BaseAgent:
 
         Args:
             agent_id: Unique identifier for the agent
-            agent_type: Type of agent (Doctor or Coordinator)
+            agent_type: Type of agent (Doctor, Coordinator, Evaluator)
             model_key: LLM model to use
         """
         self.agent_id = agent_id
@@ -593,13 +594,71 @@ class MetaAgent(BaseAgent):
             return result
 
 
+class EvaluateAgent(BaseAgent):
+    """Evaluator Agent: Evaluate the quality of each DoctorAgent's preliminary report and its similarity to the final report, scoring 10 points."""
+    def __init__(self, agent_id: str, model_key: str = "deepseek-v3-official"):
+        super().__init__(agent_id, AgentType.EVALUATOR, model_key)
+        print(f"Initializing evaluator agent, ID: {agent_id}, Model: {model_key}")
+
+    def evaluate(self, doctor_report: Dict[str, Any], final_report: Dict[str, Any], question: str, task_type: str) -> Dict[str, Any]:
+        """
+        Evaluate the quality of each DoctorAgent's preliminary report and its similarity to the final report, returning a score between 0 and 10.
+        """
+        system_message = {
+            "role": "system",
+            "content": (
+                "You are a medical AI evaluation expert. Please score each doctor's preliminary report based on the following criteria:\n"
+                "1. The medical analysis in the report is reasonable, complete, and logically clear (5 points);\n"
+                "2. The similarity between the preliminary report and the final team report's conclusion and prediction value (5 points, the closer the better).\n"
+                "Please combine the above two criteria to give a total score between 0 and 10, and output in JSON format: {\"score\": score, \"reason\": scoring reason}."
+            )
+        }
+        user_message = {
+            "role": "user",
+            "content": (
+                f"EHR data and task: {question[:500]}...\n\n"
+                f"Doctor preliminary report:\nExplanation: {doctor_report.get('explanation', '')}\nPrediction: {doctor_report.get('prediction', '')}\n\n"
+                f"Final team report:\nExplanation: {final_report.get('explanation', '')}\nPrediction: {final_report.get('prediction', '')}\n\n"
+                f"Task type: {task_type}. Please strictly follow the requirements to score and output JSON."
+            )
+        }
+        # Call LLM with retry mechanism
+        response_text = self.call_llm(system_message, user_message)
+
+        # Parse response
+        try:
+            result = json.loads(preprocess_response_string(response_text))
+            print("Evaluator agent successfully parsed")
+            # Ensure score is a float between 0 and 10
+            if "score" in result:
+                try:
+                    score = float(result["score"])
+                    result["score"] = max(0.0, min(10.0, score))
+                except ValueError: # Changed bare except to ValueError for specificity
+                    result["score"] = 0.0
+            else:
+                result["score"] = 0.0
+
+            # Add to memory
+            self.memory.append({
+                "type": "evaluation",
+                "content": result
+            })
+            return result
+        except json.JSONDecodeError:
+            print("Evaluator agent is not valid JSON, using fallback parsing")
+            return parse_structured_output(response_text)
+
+
 class MDTConsultation:
     """Multi-disciplinary team consultation coordinator for EHR prediction."""
 
     def __init__(self,
                 max_rounds: int = 3,
                 doctor_configs: List[Dict] = None,
-                meta_model_key: str = "deepseek-v3-official"):
+                meta_model_key: str = "deepseek-v3-official",
+                evaluator_model_key: str = "deepseek-v3-official"
+        ):
         """
         Initialize MDT consultation.
 
@@ -607,6 +666,7 @@ class MDTConsultation:
             max_rounds: Maximum number of discussion rounds
             doctor_configs: List of dictionaries specifying each doctor's specialty and model_key
             meta_model_key: LLM model for meta agent
+            evaluator_model_key: LLM model for evaluator agent
         """
         self.max_rounds = max_rounds
         self.doctor_configs = doctor_configs or [
@@ -616,6 +676,7 @@ class MDTConsultation:
         ] # Added default specialties for clarity
 
         self.meta_model_key = meta_model_key
+        self.evaluator_model_key = evaluator_model_key
 
         # Initialize doctor agents with different specialties and models
         self.doctor_agents = []
@@ -630,6 +691,7 @@ class MDTConsultation:
 
         # Initialize meta agent
         self.meta_agent = MetaAgent("meta", meta_model_key)
+        self.evaluator_agent = EvaluateAgent("evaluator", evaluator_model_key)
 
         # Prepare doctor info for logging
         doctor_info = ", ".join([
@@ -755,14 +817,35 @@ class MDTConsultation:
 
         print(f"Final prediction: {final_decision.get('prediction', '')}")
 
+        # Evaluate each DoctorAgent's preliminary report
+        doctor_scores = []
+        for i, doctor in enumerate(self.doctor_agents):
+            # Find the first round analysis
+            first_analysis = None
+            for mem in doctor.memory:
+                if mem["type"] == "analysis" and mem["round"] == 1:
+                    first_analysis = mem["content"]
+                    break
+            if first_analysis is not None:
+                score_result = self.evaluator_agent.evaluate(first_analysis, final_decision, question, task_type)
+            else:
+                score_result = {"score": 0.0, "reason": "No preliminary report found"}
+            doctor_scores.append({
+                "doctor_id": doctor.agent_id,
+                "specialty": doctor.specialty,
+                "score": score_result.get("score", 0.0),
+                "reason": score_result.get("reason", "")
+            })
+
         # Calculate processing time
         processing_time = time.time() - start_time
 
-        # Add final decision to history
+        # Add final decision and scores to history
         case_history["final_decision"] = final_decision
         case_history["consensus_reached"] = consensus_reached
         case_history["total_rounds"] = current_round
         case_history["processing_time"] = processing_time
+        case_history["doctor_scores"] = doctor_scores
 
         return case_history
 
