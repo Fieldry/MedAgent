@@ -121,6 +121,10 @@ print("Test data size:", len(test_data))
 # Export LOS statistics (calculated from the train set)
 pd.to_pickle(los_info, os.path.join(save_dir, "los_info.pkl"))
 
+# Export the survival and death statistics
+pd.to_pickle(df.groupby('Outcome').get_group(0).describe().to_dict('dict'), os.path.join(save_dir, 'survival.pkl'))
+pd.to_pickle(df.groupby('Outcome').get_group(1).describe().to_dict('dict'), os.path.join(save_dir, 'dead.pkl'))
+
 # Export the labtest feature names
 def process_labtest_feature_name(name: str):
     # Remove special characters and extra spaces

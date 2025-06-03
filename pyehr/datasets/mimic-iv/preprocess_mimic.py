@@ -171,6 +171,17 @@ pd.to_pickle(los_info, os.path.join(save_dir, "los_info.pkl"))
 
 # Export the labtest feature names
 pd.to_pickle(labtest_features, os.path.join(save_dir, "labtest_features.pkl"))
+pd.to_pickle(ehr_labtest_features, os.path.join(save_dir, "ehr_labtest_features.pkl"))
+
+# Export the basic info
+pd.to_pickle({
+    key: grouped.get_group(key)[['Sex', 'Age']].drop_duplicates().to_dict('records')[0]
+    for key in grouped.groups.keys()
+}, os.path.join(save_dir, 'basic.pkl'))
+
+# Export the survival and death statistics
+pd.to_pickle(df.groupby('Outcome').get_group(0).describe().to_dict('dict'), os.path.join(save_dir, 'survival.pkl'))
+pd.to_pickle(df.groupby('Outcome').get_group(1).describe().to_dict('dict'), os.path.join(save_dir, 'dead.pkl'))
 
 # Extract 10 shots (5 pos nad 5 neg) from train set and valid set
 train_pos_data = [item for item in train_data if item['y_mortality'][0] == 1]
