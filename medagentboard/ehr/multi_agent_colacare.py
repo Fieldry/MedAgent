@@ -912,7 +912,7 @@ def main():
     for model in args.doctor_models:
         doctor_configs.append({
             "model_key": model,
-            "specialty": dataset_specialty # 将由数据集定义的专业分配给每个医生
+            "specialty": dataset_specialty
         })
 
     print(f"Configuring {len(doctor_configs)} doctors with models: {[cfg['model_key'] for cfg in doctor_configs]} and specialty: {dataset_specialty}")
