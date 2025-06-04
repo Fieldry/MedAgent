@@ -166,7 +166,13 @@ def preprocess_response_string(response_text: str) -> str:
     elif response_text.startswith('```') and response_text.endswith('```'):
         response_text = response_text[3:-3].strip()
     response_text = response_text.replace("```", "").replace("json", "").strip()
+    # Remove blank characters except for blank space
+    response_text = re.sub(r'\s+', ' ', response_text)
     # Remove trailing commas
     response_text = re.sub(r',\s*}', '}', response_text)
     response_text = re.sub(r',\s*]', ']', response_text)
+    # Match string in {} using regex
+    match = re.search(r'\{.*?\}', response_text)
+    if match:
+        response_text = match.group(0).strip()
     return response_text
