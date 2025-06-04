@@ -6,14 +6,14 @@ load_dotenv()
 LLM_MODELS_SETTINGS = {
     "deepseek-v3-official": {
         "api_key": os.getenv("DEEPSEEK_API_KEY"),
-        "base_url": "https://api.deepseek.com",
+        "base_url": "https://api.deepseek.com/v1",
         "model_name": "deepseek-chat",
         "comment": "DeepSeek V3 Official",
         "reasoning": False,
     },
     "deepseek-r1-official": {
         "api_key": os.getenv("DEEPSEEK_API_KEY"),
-        "base_url": "https://api.deepseek.com",
+        "base_url": "https://api.deepseek.com/v1",
         "model_name": "deepseek-reasoner",
         "comment": "DeepSeek R1 Reasoning Model Official",
         "reasoning": True,
@@ -88,4 +88,11 @@ LLM_MODELS_SETTINGS = {
         "comment": "qwen3-235b-a22b",
         "reasoning": False,
     },
+    "qwen3-32b": {
+        "api_key": os.getenv("LMSTUDIO_API_KEY"),
+        "base_url": "https://llm.yhzhu.uk/v1",
+        "model_name": "qwen3-32b",
+        "comment": "qwen3-32b",
+        "reasoning": False,
+    }
 }
