@@ -80,7 +80,6 @@ class BaseAgent:
                 completion = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=[system_message, user_message],
-                    response_format={"type": "json_object"},
                     extra_body={"enable_thinking": False},
                     stream=True,
                 )
@@ -179,6 +178,9 @@ class DoctorAgent(BaseAgent):
             else:
                 result["prediction"] = 0.5
 
+            result["system_message"] = system_message["content"]
+            result["user_message"] = user_message["content"]
+
             # Add to memory
             self.memory.append({
                 "type": "analysis",
@@ -190,6 +192,7 @@ class DoctorAgent(BaseAgent):
             # If JSON format is not correct, use fallback parsing
             print(f"Doctor {self.agent_id} response is not valid JSON, using fallback parsing")
             result = parse_structured_output(response_text)
+            result["response_text"] = response_text
 
             # Add to memory
             self.memory.append({
@@ -287,6 +290,9 @@ class DoctorAgent(BaseAgent):
             else:
                 result["prediction"] = 0.5
 
+            result["system_message"] = system_message["content"]
+            result["user_message"] = user_message["content"]
+
             # Add to memory
             self.memory.append({
                 "type": "review",
@@ -304,10 +310,10 @@ class DoctorAgent(BaseAgent):
                 if "agree" in line.lower():
                     result["agree"] = "true" in line.lower() or "yes" in line.lower()
                 elif "reason" in line.lower():
-                    result["reason"] = line.split(":", 1)[1].strip() if ":" in line else line
+                    result["reason"] = line.split(":", 1)[1].strip().replace("\"", "") if ":" in line else line
                 elif "prediction" in line.lower():
                     try:
-                        pred_text = line.split(":", 1)[1].strip() if ":" in line else line
+                        pred_text = line.split(":", 1)[1].strip().replace("\"", "") if ":" in line else line
                         # Extract numeric prediction value
                         pred_value = float(''.join(c for c in pred_text if (c.isdigit() or c == '.')))
                         # Ensure within 0-1 range
@@ -327,6 +333,8 @@ class DoctorAgent(BaseAgent):
                     result["prediction"] = own_analysis["prediction"]
                 else:
                     result["prediction"] = synthesis.get("prediction", 0.5)
+
+            result["response_text"] = response_text
 
             # Add to memory
             self.memory.append({
@@ -429,6 +437,9 @@ class MetaAgent(BaseAgent):
             else:
                 result["prediction"] = 0.5
 
+            result["system_message"] = system_message["content"]
+            result["user_message"] = user_message["content"]
+
             # Add to memory
             self.memory.append({
                 "type": "synthesis",
@@ -440,6 +451,7 @@ class MetaAgent(BaseAgent):
             # Fallback parsing
             print("Meta agent synthesis is not valid JSON, using fallback parsing")
             result = parse_structured_output(response_text)
+            result["response_text"] = response_text
 
             # Add to memory
             self.memory.append({
@@ -571,6 +583,9 @@ class MetaAgent(BaseAgent):
             else:
                 result["prediction"] = 0.5
 
+            result["system_message"] = system_message["content"]
+            result["user_message"] = user_message["content"]
+
             # Add to memory
             self.memory.append({
                 "type": "decision",
@@ -583,6 +598,7 @@ class MetaAgent(BaseAgent):
             # Fallback parsing
             print("Meta agent final decision is not valid JSON, using fallback parsing")
             result = parse_structured_output(response_text)
+            result["response_text"] = response_text
 
             # Add to memory
             self.memory.append({
@@ -639,6 +655,9 @@ class EvaluateAgent(BaseAgent):
             else:
                 result["score"] = 0.0
 
+            result["system_message"] = system_message["content"]
+            result["user_message"] = user_message["content"]
+
             # Add to memory
             self.memory.append({
                 "type": "evaluation",
@@ -647,7 +666,23 @@ class EvaluateAgent(BaseAgent):
             return result
         except json.JSONDecodeError:
             print("Evaluator agent is not valid JSON, using fallback parsing")
-            return parse_structured_output(response_text)
+            lines = response_text.strip().split('\n')
+            result = {}
+
+            for line in lines:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    key = key.strip().lower().replace("\"", "")
+                    value = value.strip()
+                    result[key] = value
+
+            if "score" not in result:
+                result["score"] = 0.0
+            if "reason" not in result:
+                result["reason"] = ""
+
+            result["response_text"] = response_text
+            return result
 
 
 class MDTConsultation:
@@ -679,7 +714,7 @@ class MDTConsultation:
         self.evaluator_model_key = evaluator_model_key
 
         # Initialize doctor agents with different specialties and models
-        self.doctor_agents = []
+        self.doctor_agents: List[DoctorAgent] = []
         self.doctor_specialties_for_logging = []
         for idx, config in enumerate(self.doctor_configs, 1):
             agent_id = f"doctor_{idx}"
@@ -808,7 +843,7 @@ class MDTConsultation:
                     # If max rounds reached, use the last round's decision as final
                     final_decision = decision
 
-        # 如果没有最终决策，兜底
+        # If no final decision, fallback to the last round's decision
         if not final_decision:
             # Fallback if loop didn't set final_decision for some reason
             # (e.g., if max_rounds was 0, though current_round starts at 0 and increments)
@@ -872,7 +907,7 @@ def parse_structured_output(response_text: str) -> Dict[str, Any]:
         for line in lines:
             if ":" in line:
                 key, value = line.split(":", 1)
-                key = key.strip().lower()
+                key = key.strip().lower().replace("\"", "")
                 value = value.strip()
 
                 # Special handling for prediction field
@@ -897,7 +932,7 @@ def parse_structured_output(response_text: str) -> Dict[str, Any]:
         return result
 
 
-def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek-v3-official"):
+def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek-v3-official", evaluator_model_key="deepseek-v3-official"):
     """
     Process input data.
 
@@ -921,6 +956,7 @@ def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek
         max_rounds=2,
         doctor_configs=doctor_configs,
         meta_model_key=meta_model_key,
+        evaluator_model_key=evaluator_model_key,
     )
 
     # Run consultation
@@ -939,14 +975,16 @@ def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek
 
 def main():
     parser = argparse.ArgumentParser(description="Run MDT consultation on EHR datasets")
-    parser.add_argument("--dataset", type=str, required=True, choices=["mimic-iv", "tjh", "esrd"],
+    parser.add_argument("--dataset", "-d", type=str, required=True, choices=["mimic-iv", "tjh", "esrd"],
                        help="Specify dataset name: mimic-iv or tjh or esrd")
-    parser.add_argument("--task", type=str, required=True, choices=["mortality", "readmission"],
+    parser.add_argument("--task", "-t", type=str, required=True, choices=["mortality", "readmission"],
                        help="Prediction task: mortality or readmission")
     parser.add_argument("--meta_model", type=str, default="deepseek-v3-official",
                        help="Model used for meta agent")
     parser.add_argument("--doctor_models", nargs='+', default=["deepseek-v3-official", "deepseek-v3-official", "deepseek-v3-official"],
                        help="Models used for doctor agents. Provide one model name per doctor.")
+    parser.add_argument("--evaluate_model", type=str, default="deepseek-v3-official",
+                       help="Model used for evaluator agent")
     args = parser.parse_args()
 
     method = "ColaCare" # ColaCare by default
@@ -977,7 +1015,7 @@ def main():
     os.makedirs(logs_dir, exist_ok=True)
 
     # Set up data path
-    data_path = f"./my_datasets/{dataset_name}/processed/split"
+    data_path = f"./my_datasets/ehr/{dataset_name}/processed/ehr_{task_type}_test.json"
 
     # Load the data
     data = load_json(data_path)
@@ -1006,7 +1044,7 @@ def main():
         qid_str = str(qid)
 
         # Skip if already processed
-        if os.path.exists(os.path.join(logs_dir, f"ehr_timeseries_{qid_str}-result.json")):
+        if os.path.exists(os.path.join(logs_dir, f"ehr_{qid_str}-result.json")):
             print(f"Skipping {qid_str} - already processed")
             continue
 
@@ -1016,7 +1054,8 @@ def main():
                 item,
                 task_type=task_type,
                 doctor_configs=doctor_configs,
-                meta_model_key=args.meta_model
+                meta_model_key=args.meta_model,
+                evaluator_model_key=args.evaluate_model
             )
 
             # Add output to the original item and save
