@@ -36,7 +36,7 @@ def generate_prompt(
     else:  # [mimic-iii, mimic-iv]
         gender = "male" if basic_data["Sex"] == 1 else "female"
         age = basic_data["Age"]
-        basic_context = '\n'
+        basic_context = f"This {gender} patient, aged {age}, is an patient in intensive care unit (ICU).\n"
 
     last_visit_context = f"We have {len(models)} models {', '.join(models)} to predict the mortality risk and estimate the feature importance weight for the patient in the last visit:\n"
     for model, y, important_features_item in zip(models, ys, important_features):
@@ -134,7 +134,7 @@ def format_input_ehr(
         detail += ", ".join(record_time) + ".\n"
     for feature in features:
         detail += f'- {feature}: [{", ".join(feature_values[feature])}]\n'
-    return detail.strip()
+    return detail.strip() + '\n'
 
 
 def load_dataset(root_path: str, dataset: str, task: str) -> Tuple[List, List, List, List, List, List, Any]:
@@ -306,7 +306,7 @@ def main():
             important_features_item.append(process_important_features(xs[i][-1], attns[model][i], ehr_labtest_features, demo_dim))
         basic_context, last_visit_context = generate_prompt(dataset, models, basic_data, preds_item, important_features_item, survival_stats, dead_stats)
 
-        query = basic_context + '\n' + ehr_context + '\n' + last_visit_context
+        query = basic_context + ehr_context + last_visit_context
         query_list.append({
             'qid': id,
             'question': query,
