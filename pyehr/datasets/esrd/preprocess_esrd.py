@@ -126,11 +126,6 @@ pd.to_pickle(df.groupby('Outcome').get_group(0).describe().to_dict('dict'), os.p
 pd.to_pickle(df.groupby('Outcome').get_group(1).describe().to_dict('dict'), os.path.join(save_dir, 'dead.pkl'))
 
 # Export the labtest feature names
-def process_labtest_feature_name(name: str):
-    # Remove special characters and extra spaces
-    name = name.strip().replace('-', '')
-    return name
-labtest_features = [process_labtest_feature_name(name) for name in labtest_features]
 pd.to_pickle(labtest_features, os.path.join(save_dir, "labtest_features.pkl"))
 
 # Extract 10 shots (5 pos nad 5 neg) from train set and valid set
