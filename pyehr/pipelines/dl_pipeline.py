@@ -26,7 +26,6 @@ class DlPipeline(L.LightningModule):
         self.main_metric = config["main_metric"]
         self.time_aware = config.get("time_aware", False)
         self.cur_best_performance = {}
-        self.embedding: torch.Tensor
 
         model_class = getattr(models, self.model_name)
         self.ehr_encoder = model_class(**config)
@@ -47,39 +46,31 @@ class DlPipeline(L.LightningModule):
             x_demo, x_lab, mask = x[:, 0, :self.demo_dim], x[:, :, self.demo_dim:], generate_mask(lens)
             embedding, attn, decov_loss = self.ehr_encoder(x_lab, x_demo, mask)
             embedding, attn, decov_loss = embedding.to(x.device), attn.to(x.device), decov_loss.to(x.device)
-            self.embedding = embedding
-            self.attn = attn
             y_hat = self.head(embedding)
             return y_hat, embedding, attn, decov_loss
         elif self.model_name in ["AdaCare", "RETAIN"]:
             mask = generate_mask(lens)
             embedding, attn = self.ehr_encoder(x, mask)
             embedding, attn = embedding.to(x.device), attn.to(x.device)
-            self.embedding = embedding
-            self.attn = attn
             y_hat = self.head(embedding)
             return y_hat, embedding, attn
         elif self.model_name in ["GRASP", "Agent", "AICare"]:
             x_demo, x_lab, mask = x[:, 0, :self.demo_dim], x[:, :, self.demo_dim:], generate_mask(lens)
             embedding = self.ehr_encoder(x_lab, x_demo, mask).to(x.device)
-            self.embedding = embedding
             y_hat = self.head(embedding)
             return y_hat, embedding
         elif self.model_name in ["AnchCare", "TCN", "Transformer", "StageNet"]:
             mask = generate_mask(lens)
             embedding = self.ehr_encoder(x, mask).to(x.device)
-            self.embedding = embedding
             y_hat = self.head(embedding)
             return y_hat, embedding
         elif self.model_name in ["GRU", "LSTM", "RNN", "MLP"]:
             embedding = self.ehr_encoder(x).to(x.device)
-            self.embedding = embedding
             y_hat = self.head(embedding)
             return y_hat, embedding
         elif self.model_name in ["MCGRU"]:
             x_demo, x_lab = x[:, 0, :self.demo_dim], x[:, :, self.demo_dim:]
             embedding = self.ehr_encoder(x_lab, x_demo).to(x.device)
-            self.embedding = embedding
             y_hat = self.head(embedding)
             return y_hat, embedding
 
@@ -129,8 +120,8 @@ class DlPipeline(L.LightningModule):
 
     def test_step(self, batch, _):
         x, y, lens, pid = batch
-        loss, y, y_hat, _, _ = self._get_loss(x, y, lens)
-        outs = {'preds': y_hat, 'labels': y, 'pids': pid, 'attn': self.attn}
+        loss, y, y_hat, embedding, attn = self._get_loss(x, y, lens)
+        outs = {'preds': y_hat, 'labels': y, 'pids': pid, 'embedding': embedding, 'attn': attn}
         self.test_step_outputs.append(outs)
         return loss
     def on_test_epoch_end(self):
@@ -139,11 +130,12 @@ class DlPipeline(L.LightningModule):
         pids = []
         for x in self.test_step_outputs:
             pids.extend(x['pids'])
+        embeddings = torch.cat([x['embedding'] for x in self.test_step_outputs]).detach().cpu()
         attns = torch.cat([x['attn'] for x in self.test_step_outputs]).detach().cpu()
         if attns.size(1) > self.lab_dim:
             attns = attns[:, self.demo_dim:]
         self.test_performance = get_all_metrics(preds, labels, self.task, self.los_info)
-        self.test_outputs = {'preds': preds.tolist(), 'labels': labels.tolist(), 'pids': pids, 'attns': attns.tolist()}
+        self.test_outputs = {'preds': preds.tolist(), 'labels': labels.tolist(), 'pids': pids, 'embeddings': embeddings.tolist(), 'attns': attns.tolist()}
         self.test_step_outputs.clear()
         return self.test_performance
 
