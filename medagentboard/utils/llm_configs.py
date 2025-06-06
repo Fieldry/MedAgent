@@ -6,14 +6,14 @@ load_dotenv()
 LLM_MODELS_SETTINGS = {
     "deepseek-v3-official": {
         "api_key": os.getenv("DEEPSEEK_API_KEY"),
-        "base_url": "https://api.deepseek.com/v1",
+        "base_url": "https://api.deepseek.com",
         "model_name": "deepseek-chat",
         "comment": "DeepSeek V3 Official",
         "reasoning": False,
     },
     "deepseek-r1-official": {
         "api_key": os.getenv("DEEPSEEK_API_KEY"),
-        "base_url": "https://api.deepseek.com/v1",
+        "base_url": "https://api.deepseek.com",
         "model_name": "deepseek-reasoner",
         "comment": "DeepSeek R1 Reasoning Model Official",
         "reasoning": True,
