@@ -173,7 +173,7 @@ class DoctorAgent(BaseAgent):
                 try:
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
-                except ValueError: # Changed bare except to ValueError for specificity
+                except Exception:
                     result["prediction"] = 0.5  # Default fallback
             else:
                 result["prediction"] = 0.5
@@ -285,7 +285,7 @@ class DoctorAgent(BaseAgent):
                 try:
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
-                except ValueError: # Changed bare except to ValueError for specificity
+                except Exception:
                     result["prediction"] = 0.5  # Default fallback
             else:
                 result["prediction"] = 0.5
@@ -319,7 +319,7 @@ class DoctorAgent(BaseAgent):
                         # Ensure within 0-1 range
                         pred_value = max(0.0, min(1.0, pred_value))
                         result["prediction"] = pred_value
-                    except ValueError: # Changed bare except to ValueError for specificity
+                    except Exception:
                         result["prediction"] = 0.5  # Default fallback
 
             # Ensure required fields
@@ -432,7 +432,8 @@ class MetaAgent(BaseAgent):
                 try:
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
-                except ValueError: # Changed bare except to ValueError for specificity
+                except Exception:
+                    print(response_text)
                     result["prediction"] = 0.5  # Default fallback
             else:
                 result["prediction"] = 0.5
@@ -578,7 +579,7 @@ class MetaAgent(BaseAgent):
                 try:
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
-                except ValueError: # Changed bare except to ValueError for specificity
+                except Exception:
                     result["prediction"] = 0.5  # Default fallback
             else:
                 result["prediction"] = 0.5
@@ -650,7 +651,7 @@ class EvaluateAgent(BaseAgent):
                 try:
                     score = float(result["score"])
                     result["score"] = max(0.0, min(10.0, score))
-                except ValueError: # Changed bare except to ValueError for specificity
+                except Exception:
                     result["score"] = 0.0
             else:
                 result["score"] = 0.0
@@ -758,6 +759,8 @@ class MDTConsultation:
 
         # Case consultation history
         case_history = {
+            "opinions": [],
+            "synthesis": None,
             "rounds": []
         }
 
@@ -765,42 +768,39 @@ class MDTConsultation:
         final_decision = None
         consensus_reached = False
 
+        # Step 1: Each doctor analyzes the case
+        doctor_opinions = []
+        for i, doctor in enumerate(self.doctor_agents):
+            print(f"Doctor {i+1} ({doctor.specialty}) analyzing case")
+            opinion = doctor.analyze_case(question, task_type)
+            # Store original opinion with doctor details for meta agent to access
+            doctor_opinions.append({
+                "doctor_id": doctor.agent_id,
+                "specialty": doctor.specialty,
+                "opinion": opinion
+            })
+            case_history["opinions"].append({
+                "doctor_id": doctor.agent_id,
+                "specialty": doctor.specialty,
+                "opinion": opinion
+            })
+            print(f"Doctor {i+1} prediction: {opinion.get('prediction', '')}")
+
+        # Step 2: Meta agent synthesizes opinions
+        print("Meta agent synthesizing opinions")
+        synthesis = self.meta_agent.synthesize_opinions(
+            question, doctor_opinions,
+            current_round, task_type
+        )
+        case_history["synthesis"] = synthesis
+        print(f"Meta agent synthesis prediction: {synthesis.get('prediction', '')}")
+
+        # Step 3: Doctors review synthesis
         while current_round < self.max_rounds and not consensus_reached:
             current_round += 1
             print(f"Starting round {current_round}")
+            round_data = {"round": current_round, "reviews": []}
 
-            round_data = {"round": current_round, "opinions": [], "synthesis": None, "reviews": []}
-
-            # Step 1: Each doctor analyzes the case
-            doctor_opinions = []
-            for i, doctor in enumerate(self.doctor_agents):
-                print(f"Doctor {i+1} ({doctor.specialty}) analyzing case")
-                opinion = doctor.analyze_case(question, task_type)
-                # Store original opinion with doctor details for meta agent to access
-                doctor_opinions.append({
-                    "doctor_id": doctor.agent_id,
-                    "specialty": doctor.specialty,
-                    "opinion": opinion
-                })
-                round_data["opinions"].append({
-                    "doctor_id": doctor.agent_id,
-                    "specialty": doctor.specialty,
-                    "opinion": opinion
-                })
-
-                print(f"Doctor {i+1} prediction: {opinion.get('prediction', '')}")
-
-            # Step 2: Meta agent synthesizes opinions
-            print("Meta agent synthesizing opinions")
-            synthesis = self.meta_agent.synthesize_opinions(
-                question, doctor_opinions,
-                current_round, task_type
-            )
-            round_data["synthesis"] = synthesis
-
-            print(f"Meta agent synthesis prediction: {synthesis.get('prediction', '')}")
-
-            # Step 3: Doctors review synthesis
             doctor_reviews = []
             all_agree = True
             for i, doctor in enumerate(self.doctor_agents):
@@ -820,7 +820,6 @@ class MDTConsultation:
 
                 agrees = review.get('agree', False)
                 all_agree = all_agree and agrees
-
                 print(f"Doctor {i+1} agrees: {'Yes' if agrees else 'No'}")
 
             # Add round data to history
@@ -845,8 +844,6 @@ class MDTConsultation:
 
         # If no final decision, fallback to the last round's decision
         if not final_decision:
-            # Fallback if loop didn't set final_decision for some reason
-            # (e.g., if max_rounds was 0, though current_round starts at 0 and increments)
             final_decision = decision if 'decision' in locals() else {"explanation": "No decision could be made.", "prediction": 0.5}
 
         print(f"Final prediction: {final_decision.get('prediction', '')}")
@@ -918,7 +915,7 @@ def parse_structured_output(response_text: str) -> Dict[str, Any]:
                         # Ensure within 0-1 range
                         pred_value = max(0.0, min(1.0, pred_value))
                         result[key] = pred_value
-                    except ValueError: # Changed bare except to ValueError for specificity
+                    except Exception:
                         result[key] = 0.5  # Default fallback
                 else:
                     result[key] = value
@@ -1037,7 +1034,7 @@ def main():
     print(f"Configuring {len(doctor_configs)} doctors with models: {[cfg['model_key'] for cfg in doctor_configs]} and specialty: {dataset_specialty}")
 
     # Process each item
-    for item in tqdm(data, desc=f"Running MDT consultation on {dataset_name} {task_type}"):
+    for item in tqdm(data[:20], desc=f"Running MDT consultation on {dataset_name} {task_type}"):
         qid = item["qid"]
 
         # Format the qid for the output file
