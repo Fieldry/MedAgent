@@ -186,9 +186,9 @@ class DoctorAgent(BaseAgent):
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
                 except Exception:
-                    result["prediction"] = 0.5  # Default fallback
+                    result["prediction"] = 0.501  # Default fallback
             else:
-                result["prediction"] = 0.5
+                result["prediction"] = 0.501
 
             result["system_message"] = system_message["content"]
             result["user_message"] = user_message["content"]
@@ -301,9 +301,9 @@ class DoctorAgent(BaseAgent):
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
                 except Exception:
-                    result["prediction"] = 0.5  # Default fallback
+                    result["prediction"] = 0.501  # Default fallback
             else:
-                result["prediction"] = 0.5
+                result["prediction"] = 0.501
 
             result["system_message"] = system_message["content"]
             result["user_message"] = user_message["content"]
@@ -336,7 +336,7 @@ class DoctorAgent(BaseAgent):
                         pred_value = max(0.0, min(1.0, pred_value))
                         result["prediction"] = pred_value
                     except Exception:
-                        result["prediction"] = 0.5  # Default fallback
+                        result["prediction"] = 0.501  # Default fallback
 
             # Ensure required fields
             if "agree" not in result:
@@ -348,7 +348,7 @@ class DoctorAgent(BaseAgent):
                 if own_analysis and "prediction" in own_analysis:
                     result["prediction"] = own_analysis["prediction"]
                 else:
-                    result["prediction"] = synthesis.get("prediction", 0.5)
+                    result["prediction"] = synthesis.get("prediction", 0.501)
 
             result["response_text"] = response_text
 
@@ -454,9 +454,9 @@ class MetaAgent(BaseAgent):
                     result["prediction"] = max(0.0, min(1.0, pred))
                 except Exception:
                     print(response_text)
-                    result["prediction"] = 0.5  # Default fallback
+                    result["prediction"] = 0.501  # Default fallback
             else:
-                result["prediction"] = 0.5
+                result["prediction"] = 0.501
 
             result["system_message"] = system_message["content"]
             result["user_message"] = user_message["content"]
@@ -603,9 +603,9 @@ class MetaAgent(BaseAgent):
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
                 except Exception:
-                    result["prediction"] = 0.5  # Default fallback
+                    result["prediction"] = 0.501  # Default fallback
             else:
-                result["prediction"] = 0.5
+                result["prediction"] = 0.501
 
             result["system_message"] = system_message["content"]
             result["user_message"] = user_message["content"]
@@ -884,7 +884,7 @@ class MDTConsultation:
 
         # If no final decision, fallback to the last round's decision
         if not final_decision:
-            final_decision = decision if 'decision' in locals() else {"explanation": "No decision could be made.", "prediction": 0.5}
+            final_decision = decision if 'decision' in locals() else {"explanation": "No decision could be made.", "prediction": 0.501}
 
         if self.logger:
             self.logger.info(f"Final prediction: {final_decision.get('prediction', '')}")
@@ -957,7 +957,7 @@ def parse_structured_output(response_text: str) -> Dict[str, Any]:
                         pred_value = max(0.0, min(1.0, pred_value))
                         result[key] = pred_value
                     except Exception:
-                        result[key] = 0.5  # Default fallback
+                        result[key] = 0.501  # Default fallback
                 else:
                     result[key] = value
 
@@ -965,7 +965,7 @@ def parse_structured_output(response_text: str) -> Dict[str, Any]:
         if "explanation" not in result:
             result["explanation"] = "No structured explanation found in response"
         if "prediction" not in result:
-            result["prediction"] = 0.5  # Default to 0.5 probability
+            result["prediction"] = 0.501  # Default values
 
         return result
 
@@ -1126,7 +1126,7 @@ def main():
             item_result = {
                 "qid": qid,
                 "question": item["question"],
-                "ground_truth": item.get("answer"),
+                "ground_truth": item.get("ground_truth"),
                 "predicted_value": result["final_decision"]["prediction"],
                 "case_history": result,
                 "timestamp": int(time.time()),
