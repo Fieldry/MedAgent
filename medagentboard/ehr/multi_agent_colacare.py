@@ -10,6 +10,7 @@ import os
 import json
 import time
 import argparse
+import logging
 from tqdm import tqdm
 from enum import Enum
 from typing import Dict, Any, List
@@ -33,7 +34,8 @@ class BaseAgent:
     def __init__(self,
                  agent_id: str,
                  agent_type: AgentType,
-                 model_key: str = "deepseek-v3-official"):
+                 model_key: str = "deepseek-v3-official",
+                 logger=None):
         """
         Initialize the base agent.
 
@@ -41,11 +43,13 @@ class BaseAgent:
             agent_id: Unique identifier for the agent
             agent_type: Type of agent (Doctor, Coordinator, Evaluator)
             model_key: LLM model to use
+            logger: Logger object for logging
         """
         self.agent_id = agent_id
         self.agent_type = agent_type
         self.model_key = model_key
         self.memory = []
+        self.logger = logger
 
         if model_key not in LLM_MODELS_SETTINGS:
             raise ValueError(f"Model key '{model_key}' not found in LLM_MODELS_SETTINGS")
@@ -76,7 +80,8 @@ class BaseAgent:
         retries = 0
         while retries < max_retries:
             try:
-                print(f"Agent {self.agent_id} calling LLM, system message: {system_message['content'][:50]}...")
+                if self.logger:
+                    self.logger.info(f"Agent {self.agent_id} calling LLM, system message: {system_message['content'][:50]}...")
                 completion = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=[system_message, user_message],
@@ -90,11 +95,13 @@ class BaseAgent:
                         response_chunks.append(chunk.choices[0].delta.content)
 
                 response = "".join(response_chunks)
-                print(f"Agent {self.agent_id} received response: {response[:50]}...")
+                if self.logger:
+                    self.logger.info(f"Agent {self.agent_id} received response: {response[:50]}...")
                 return response
             except Exception as e:
                 retries += 1
-                print(f"LLM API call error (attempt {retries}/{max_retries}): {e}")
+                if self.logger:
+                    self.logger.error(f"LLM API call error (attempt {retries}/{max_retries}): {e}")
                 if retries >= max_retries:
                     raise Exception(f"LLM API call failed after {max_retries} attempts: {e}")
                 time.sleep(1)  # Brief pause before retrying
@@ -106,7 +113,8 @@ class DoctorAgent(BaseAgent):
     def __init__(self,
                  agent_id: str,
                  specialty: str, # 新增 specialty 参数
-                 model_key: str = "deepseek-v3-official"):
+                 model_key: str = "deepseek-v3-official",
+                 logger=None):
         """
         Initialize a doctor agent.
 
@@ -114,10 +122,12 @@ class DoctorAgent(BaseAgent):
             agent_id: Unique identifier for the doctor
             specialty: Doctor's clinical specialty (string)
             model_key: LLM model to use
+            logger: Logger object for logging
         """
-        super().__init__(agent_id, AgentType.DOCTOR, model_key)
+        super().__init__(agent_id, AgentType.DOCTOR, model_key, logger=logger)
         self.specialty = specialty # 设置 specialty
-        print(f"Initializing doctor agent, ID: {agent_id}, Specialty: {specialty}, Model: {model_key}")
+        if self.logger:
+            self.logger.info(f"Initializing doctor agent, ID: {agent_id}, Specialty: {specialty}, Model: {model_key}")
 
     def analyze_case(self,
                     question: str,
@@ -132,7 +142,8 @@ class DoctorAgent(BaseAgent):
         Returns:
             Dictionary containing analysis results and prediction
         """
-        print(f"Doctor {self.agent_id} ({self.specialty}) analyzing case with model: {self.model_key}")
+        if self.logger:
+            self.logger.info(f"Doctor {self.agent_id} ({self.specialty}) analyzing case with model: {self.model_key}")
 
         # Prepare system message to guide the doctor's analysis
         system_message = {
@@ -166,7 +177,8 @@ class DoctorAgent(BaseAgent):
         # Parse response
         try:
             result = json.loads(preprocess_response_string(response_text))
-            print(f"Doctor {self.agent_id} response successfully parsed")
+            if self.logger:
+                self.logger.info(f"Doctor {self.agent_id} response successfully parsed")
 
             # Ensure prediction is a float between 0 and 1
             if "prediction" in result:
@@ -190,7 +202,8 @@ class DoctorAgent(BaseAgent):
             return result
         except json.JSONDecodeError:
             # If JSON format is not correct, use fallback parsing
-            print(f"Doctor {self.agent_id} response is not valid JSON, using fallback parsing")
+            if self.logger:
+                self.logger.warning(f"Doctor {self.agent_id} response is not valid JSON, using fallback parsing")
             result = parse_structured_output(response_text)
             result["response_text"] = response_text
 
@@ -217,7 +230,8 @@ class DoctorAgent(BaseAgent):
         Returns:
             Dictionary containing agreement status and possible rebuttal
         """
-        print(f"Doctor {self.agent_id} ({self.specialty}) reviewing synthesis with model: {self.model_key}")
+        if self.logger:
+            self.logger.info(f"Doctor {self.agent_id} ({self.specialty}) reviewing synthesis with model: {self.model_key}")
 
         # Get current round
         current_round = len(self.memory) // 2 + 1
@@ -274,7 +288,8 @@ class DoctorAgent(BaseAgent):
         # Parse response
         try:
             result = json.loads(preprocess_response_string(response_text))
-            print(f"Doctor {self.agent_id} review successfully parsed")
+            if self.logger:
+                self.logger.info(f"Doctor {self.agent_id} review successfully parsed")
 
             # Normalize agree field
             if isinstance(result.get("agree"), str):
@@ -302,7 +317,8 @@ class DoctorAgent(BaseAgent):
             return result
         except json.JSONDecodeError:
             # Fallback parsing
-            print(f"Doctor {self.agent_id} review is not valid JSON, using fallback parsing")
+            if self.logger:
+                self.logger.warning(f"Doctor {self.agent_id} review is not valid JSON, using fallback parsing")
             lines = response_text.strip().split('\n')
             result = {}
 
@@ -348,16 +364,18 @@ class DoctorAgent(BaseAgent):
 class MetaAgent(BaseAgent):
     """Meta agent that synthesizes multiple doctors' opinions for EHR prediction."""
 
-    def __init__(self, agent_id: str, model_key: str = "deepseek-v3-official"):
+    def __init__(self, agent_id: str, model_key: str = "deepseek-v3-official", logger=None):
         """
         Initialize a meta agent.
 
         Args:
             agent_id: Unique identifier for the agent
             model_key: LLM model to use
+            logger: Logger object for logging
         """
-        super().__init__(agent_id, AgentType.META, model_key)
-        print(f"Initializing meta agent, ID: {agent_id}, Model: {model_key}")
+        super().__init__(agent_id, AgentType.META, model_key, logger=logger)
+        if self.logger:
+            self.logger.info(f"Initializing meta agent, ID: {agent_id}, Model: {model_key}")
 
     def synthesize_opinions(self,
                            question: str,
@@ -376,7 +394,8 @@ class MetaAgent(BaseAgent):
         Returns:
             Dictionary containing synthesized explanation and prediction
         """
-        print(f"Meta agent synthesizing round {current_round} opinions with model: {self.model_key}")
+        if self.logger:
+            self.logger.info(f"Meta agent synthesizing round {current_round} opinions with model: {self.model_key}")
 
         # Prepare system message for synthesis
         system_message = {
@@ -425,7 +444,8 @@ class MetaAgent(BaseAgent):
         # Parse response
         try:
             result = json.loads(preprocess_response_string(response_text))
-            print("Meta agent synthesis successfully parsed")
+            if self.logger:
+                self.logger.info("Meta agent synthesis successfully parsed")
 
             # Ensure prediction is a float between 0 and 1
             if "prediction" in result:
@@ -450,7 +470,8 @@ class MetaAgent(BaseAgent):
             return result
         except json.JSONDecodeError:
             # Fallback parsing
-            print("Meta agent synthesis is not valid JSON, using fallback parsing")
+            if self.logger:
+                self.logger.warning("Meta agent synthesis is not valid JSON, using fallback parsing")
             result = parse_structured_output(response_text)
             result["response_text"] = response_text
 
@@ -483,7 +504,8 @@ class MetaAgent(BaseAgent):
         Returns:
             Dictionary containing final explanation and prediction
         """
-        print(f"Meta agent making round {current_round} decision with model: {self.model_key}")
+        if self.logger:
+            self.logger.info(f"Meta agent making round {current_round} decision with model: {self.model_key}")
 
         # Check if all doctors agree
         all_agree = all(review.get('agree', False) for review in doctor_reviews)
@@ -572,7 +594,8 @@ class MetaAgent(BaseAgent):
         # Parse response
         try:
             result = json.loads(preprocess_response_string(response_text))
-            print("Meta agent final decision successfully parsed")
+            if self.logger:
+                self.logger.info("Meta agent final decision successfully parsed")
 
             # Ensure prediction is a float between 0 and 1
             if "prediction" in result:
@@ -597,7 +620,8 @@ class MetaAgent(BaseAgent):
             return result
         except json.JSONDecodeError:
             # Fallback parsing
-            print("Meta agent final decision is not valid JSON, using fallback parsing")
+            if self.logger:
+                self.logger.warning("Meta agent final decision is not valid JSON, using fallback parsing")
             result = parse_structured_output(response_text)
             result["response_text"] = response_text
 
@@ -613,9 +637,10 @@ class MetaAgent(BaseAgent):
 
 class EvaluateAgent(BaseAgent):
     """Evaluator Agent: Evaluate the quality of each DoctorAgent's preliminary report and its similarity to the final report, scoring 10 points."""
-    def __init__(self, agent_id: str, model_key: str = "deepseek-v3-official"):
-        super().__init__(agent_id, AgentType.EVALUATOR, model_key)
-        print(f"Initializing evaluator agent, ID: {agent_id}, Model: {model_key}")
+    def __init__(self, agent_id: str, model_key: str = "deepseek-v3-official", logger=None):
+        super().__init__(agent_id, AgentType.EVALUATOR, model_key, logger=logger)
+        if self.logger:
+            self.logger.info(f"Initializing evaluator agent, ID: {agent_id}, Model: {model_key}")
 
     def evaluate(self, doctor_report: Dict[str, Any], final_report: Dict[str, Any], question: str, task_type: str) -> Dict[str, Any]:
         """
@@ -645,7 +670,8 @@ class EvaluateAgent(BaseAgent):
         # Parse response
         try:
             result = json.loads(preprocess_response_string(response_text))
-            print("Evaluator agent successfully parsed")
+            if self.logger:
+                self.logger.info("Evaluator agent successfully parsed")
             # Ensure score is a float between 0 and 10
             if "score" in result:
                 try:
@@ -666,7 +692,8 @@ class EvaluateAgent(BaseAgent):
             })
             return result
         except json.JSONDecodeError:
-            print("Evaluator agent is not valid JSON, using fallback parsing")
+            if self.logger:
+                self.logger.warning("Evaluator agent is not valid JSON, using fallback parsing")
             lines = response_text.strip().split('\n')
             result = {}
 
@@ -693,7 +720,8 @@ class MDTConsultation:
                 max_rounds: int = 3,
                 doctor_configs: List[Dict] = None,
                 meta_model_key: str = "deepseek-v3-official",
-                evaluator_model_key: str = "deepseek-v3-official"
+                evaluator_model_key: str = "deepseek-v3-official",
+                logger=None
         ):
         """
         Initialize MDT consultation.
@@ -703,6 +731,7 @@ class MDTConsultation:
             doctor_configs: List of dictionaries specifying each doctor's specialty and model_key
             meta_model_key: LLM model for meta agent
             evaluator_model_key: LLM model for evaluator agent
+            logger: Logger object for logging consultation process
         """
         self.max_rounds = max_rounds
         self.doctor_configs = doctor_configs or [
@@ -713,6 +742,7 @@ class MDTConsultation:
 
         self.meta_model_key = meta_model_key
         self.evaluator_model_key = evaluator_model_key
+        self.logger = logger
 
         # Initialize doctor agents with different specialties and models
         self.doctor_agents: List[DoctorAgent] = []
@@ -721,21 +751,21 @@ class MDTConsultation:
             agent_id = f"doctor_{idx}"
             model_key = config.get("model_key", "deepseek-v3-official")
             specialty = config.get("specialty", "General Medicine")
-            doctor_agent = DoctorAgent(agent_id, specialty, model_key)
+            doctor_agent = DoctorAgent(agent_id, specialty, model_key, logger=logger)
             self.doctor_agents.append(doctor_agent)
             self.doctor_specialties_for_logging.append(specialty)
 
         # Initialize meta agent
-        self.meta_agent = MetaAgent("meta", meta_model_key)
-        self.evaluator_agent = EvaluateAgent("evaluator", evaluator_model_key)
+        self.meta_agent = MetaAgent("meta", meta_model_key, logger=logger)
+        self.evaluator_agent = EvaluateAgent("evaluator", evaluator_model_key, logger=logger)
 
         # Prepare doctor info for logging
         doctor_info = ", ".join([
             f"{config.get('specialty', 'General Medicine')} ({config.get('model_key', 'default')})"
             for config in self.doctor_configs
         ])
-        print(f"Initialized MDT consultation, max_rounds={max_rounds}, doctors: [{doctor_info}], meta_model={meta_model_key}")
-
+        if self.logger:
+            self.logger.info(f"Initialized MDT consultation, max_rounds={max_rounds}, doctors: [{doctor_info}], meta_model={meta_model_key}")
 
     def run_consultation(self,
                         qid: str,
@@ -754,8 +784,9 @@ class MDTConsultation:
         """
         start_time = time.time()
 
-        print(f"Starting MDT consultation for case {qid}")
-        print(f"Task type: {task_type}")
+        if self.logger:
+            self.logger.info(f"Starting MDT consultation for case {qid}")
+            self.logger.info(f"Task type: {task_type}")
 
         # Case consultation history
         case_history = {
@@ -771,7 +802,8 @@ class MDTConsultation:
         # Step 1: Each doctor analyzes the case
         doctor_opinions = []
         for i, doctor in enumerate(self.doctor_agents):
-            print(f"Doctor {i+1} ({doctor.specialty}) analyzing case")
+            if self.logger:
+                self.logger.info(f"Doctor {i+1} ({doctor.specialty}) analyzing case")
             opinion = doctor.analyze_case(question, task_type)
             # Store original opinion with doctor details for meta agent to access
             doctor_opinions.append({
@@ -784,27 +816,32 @@ class MDTConsultation:
                 "specialty": doctor.specialty,
                 "opinion": opinion
             })
-            print(f"Doctor {i+1} prediction: {opinion.get('prediction', '')}")
+            if self.logger:
+                self.logger.info(f"Doctor {i+1} prediction: {opinion.get('prediction', '')}")
 
         # Step 2: Meta agent synthesizes opinions
-        print("Meta agent synthesizing opinions")
+        if self.logger:
+            self.logger.info("Meta agent synthesizing opinions")
         synthesis = self.meta_agent.synthesize_opinions(
             question, doctor_opinions,
             current_round, task_type
         )
         case_history["synthesis"] = synthesis
-        print(f"Meta agent synthesis prediction: {synthesis.get('prediction', '')}")
+        if self.logger:
+            self.logger.info(f"Meta agent synthesis prediction: {synthesis.get('prediction', '')}")
 
         # Step 3: Doctors review synthesis
         while current_round < self.max_rounds and not consensus_reached:
             current_round += 1
-            print(f"Starting round {current_round}")
+            if self.logger:
+                self.logger.info(f"Starting round {current_round}")
             round_data = {"round": current_round, "reviews": []}
 
             doctor_reviews = []
             all_agree = True
             for i, doctor in enumerate(self.doctor_agents):
-                print(f"Doctor {i+1} ({doctor.specialty}) reviewing synthesis")
+                if self.logger:
+                    self.logger.info(f"Doctor {i+1} ({doctor.specialty}) reviewing synthesis")
                 review = doctor.review_synthesis(question, synthesis, task_type)
                 # Store original review with doctor details for meta agent to access
                 doctor_reviews.append({
@@ -820,7 +857,8 @@ class MDTConsultation:
 
                 agrees = review.get('agree', False)
                 all_agree = all_agree and agrees
-                print(f"Doctor {i+1} agrees: {'Yes' if agrees else 'No'}")
+                if self.logger:
+                    self.logger.info(f"Doctor {i+1} agrees: {'Yes' if agrees else 'No'}")
 
             # Add round data to history
             case_history["rounds"].append(round_data)
@@ -835,9 +873,11 @@ class MDTConsultation:
             if all_agree:
                 consensus_reached = True
                 final_decision = decision
-                print("Consensus reached")
+                if self.logger:
+                    self.logger.info("Consensus reached")
             else:
-                print("No consensus reached, continuing to next round")
+                if self.logger:
+                    self.logger.info("No consensus reached, continuing to next round")
                 if current_round == self.max_rounds:
                     # If max rounds reached, use the last round's decision as final
                     final_decision = decision
@@ -846,7 +886,8 @@ class MDTConsultation:
         if not final_decision:
             final_decision = decision if 'decision' in locals() else {"explanation": "No decision could be made.", "prediction": 0.5}
 
-        print(f"Final prediction: {final_decision.get('prediction', '')}")
+        if self.logger:
+            self.logger.info(f"Final prediction: {final_decision.get('prediction', '')}")
 
         # Evaluate each DoctorAgent's preliminary report
         doctor_scores = []
@@ -929,7 +970,20 @@ def parse_structured_output(response_text: str) -> Dict[str, Any]:
         return result
 
 
-def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek-v3-official", evaluator_model_key="deepseek-v3-official"):
+# Get logger for each patient
+def get_logger(log_path):
+    logger = logging.getLogger(log_path)
+    logger.setLevel(logging.INFO)
+    # 防止重复添加handler
+    if not logger.handlers:
+        fh = logging.FileHandler(log_path, encoding='utf-8')
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+    return logger
+
+
+def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek-v3-official", evaluator_model_key="deepseek-v3-official", logger=None):
     """
     Process input data.
 
@@ -938,6 +992,7 @@ def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek
         task_type: Type of task (mortality or readmission)
         doctor_configs: List of doctor configurations (specialty and model_key)
         meta_model_key: Model key for the meta agent
+        logger: Logger object for logging consultation process
 
     Returns:
         Processed result from MDT consultation
@@ -954,6 +1009,7 @@ def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek
         doctor_configs=doctor_configs,
         meta_model_key=meta_model_key,
         evaluator_model_key=evaluator_model_key,
+        logger=logger,
     )
 
     # Run consultation
@@ -1008,8 +1064,13 @@ def main():
     print(f"Doctors' specialty for this dataset ({dataset_name}): {dataset_specialty}")
 
     # Create logs directory structure
-    logs_dir = os.path.join("logs", dataset_name, task_type, method)
+    save_dir = os.path.join("logs", dataset_name, task_type, method)
+    logs_dir = os.path.join(save_dir, "logs")
+    results_dir = os.path.join(save_dir, "results")
+    error_dir = os.path.join(save_dir, "error")
     os.makedirs(logs_dir, exist_ok=True)
+    os.makedirs(results_dir, exist_ok=True)
+    os.makedirs(error_dir, exist_ok=True)
 
     # Set up data path
     data_path = f"./my_datasets/ehr/{dataset_name}/processed/ehr_{task_type}_test.json"
@@ -1023,7 +1084,8 @@ def main():
 
     if len(args.doctor_models) > 3:
         print(f"Warning: More doctor models ({len(args.doctor_models)}) provided than typical (3)."
-              f"All provided models will be used, each assigned the dataset specialty.")
+            f"All provided models will be used, each assigned the dataset specialty.")
+        pass
 
     for model in args.doctor_models:
         doctor_configs.append({
@@ -1041,9 +1103,13 @@ def main():
         qid_str = str(qid)
 
         # Skip if already processed
-        if os.path.exists(os.path.join(logs_dir, f"ehr_{qid_str}-result.json")):
+        if os.path.exists(os.path.join(results_dir, f"ehr_{qid_str}-result.json")):
             print(f"Skipping {qid_str} - already processed")
             continue
+
+        # Configure logger
+        log_path = os.path.join(logs_dir, f"ehr_{qid_str}.log")
+        logger = get_logger(log_path)
 
         try:
             # Process the item
@@ -1052,7 +1118,8 @@ def main():
                 task_type=task_type,
                 doctor_configs=doctor_configs,
                 meta_model_key=args.meta_model,
-                evaluator_model_key=args.evaluate_model
+                evaluator_model_key=args.evaluate_model,
+                logger=logger
             )
 
             # Add output to the original item and save
@@ -1067,12 +1134,13 @@ def main():
             }
 
             # Save individual result
-            save_json(item_result, os.path.join(logs_dir, f"ehr_{qid_str}-result.json"))
+            save_json(item_result, os.path.join(results_dir, f"ehr_{qid_str}-result.json"))
 
         except Exception as e:
-            print(f"Error processing item {qid}: {e}")
+            if logger:
+                logger.error(f"Error processing item {qid}: {e}")
             # Optionally, save an error log for the QID
-            error_log_path = os.path.join(logs_dir, f"ehr_{qid_str}-error.log")
+            error_log_path = os.path.join(error_dir, f"ehr_{qid_str}-error.log")
             with open(error_log_path, "w") as f:
                 f.write(f"Error processing {qid}: {e}\n")
                 import traceback
