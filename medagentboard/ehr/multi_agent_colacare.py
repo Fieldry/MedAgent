@@ -78,6 +78,10 @@ class BaseAgent:
             LLM response text
         """
         retries = 0
+        # TODO: improve input context length limit
+        print(self.client.api_key)
+        print(self.model_name)
+        print(self.client.base_url)
         while retries < max_retries:
             try:
                 if self.logger:
@@ -650,8 +654,7 @@ class EvaluateAgent(BaseAgent):
             "role": "system",
             "content": (
                 "You are a medical AI evaluation expert. Please score each doctor's preliminary report based on the following criteria:\n"
-                "1. The medical analysis in the report is reasonable, complete, and logically clear (5 points);\n"
-                "2. The similarity between the preliminary report and the final team report's conclusion and prediction value (5 points, the closer the better).\n"
+                "The similarity between the preliminary report and the final team report's conclusion and prediction value (10 points, the closer the better).\n"
                 "Please combine the above two criteria to give a total score between 0 and 10, and output in JSON format: {\"score\": score, \"reason\": scoring reason}."
             )
         }
