@@ -1,15 +1,10 @@
 my_datasets/
 logs/
-prompt_*.txt
 
-*.json
-test_img.jpg
 .DS_Store
-debug.py
+prompt_*.txt
 *.json
-
-# TEMP FILES
-inf.sh
+*.ipynb
 
 # ZONE.IDENTIFIER
 *Zone.Identifier
