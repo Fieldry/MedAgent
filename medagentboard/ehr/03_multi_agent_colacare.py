@@ -19,6 +19,7 @@ from openai import OpenAI
 
 from medagentboard.utils.llm_configs import LLM_MODELS_SETTINGS
 from medagentboard.utils.json_utils import load_json, save_json, preprocess_response_string
+from medagentboard.utils import prompt_template
 
 
 class AgentType(Enum):
@@ -149,30 +150,20 @@ class DoctorAgent(BaseAgent):
         if self.logger:
             self.logger.info(f"Doctor {self.agent_id} ({self.specialty}) analyzing case with model: {self.model_key}")
 
-        # Prepare system message to guide the doctor's analysis
+        if task_type == "mortality":
+            task_hint = prompt_template.TASK_HINT_MORTALITY
+        elif task_type == "readmission":
+            task_hint = prompt_template.TASK_HINT_READMISSION
+        else:
+            task_hint = ""
+
         system_message = {
             "role": "system",
-            "content": f"You are a physician specializing in {self.specialty}. " # 使用 self.specialty
-                f"Analyze the provided time series EHR data and make a clinical prediction. "
-                f"Your output should be in JSON format, including 'explanation' (detailed reasoning) and "
-                f"'prediction' (a floating-point number between 0 and 1 representing probability) fields."
+            "content": f"{prompt_template.DOCTOR_ANALYZE_SYSTEM.format(specialty=self.specialty, task_hint=task_hint)}"
         }
-
-        if task_type == "mortality":
-            system_message["content"] += (
-                f" For mortality prediction, your 'prediction' field should reflect the probability of the patient "
-                f"not surviving their hospital stay (higher values indicate higher mortality risk)."
-            )
-        elif task_type == "readmission":
-            system_message["content"] += (
-                f" For readmission prediction, your 'prediction' field should reflect the probability of patient "
-                f"readmission within 30 days post-discharge (higher values indicate higher readmission risk)."
-            )
-
-        # Prepare user message with the question
         user_message = {
             "role": "user",
-            "content": f"{question}\n\nProvide your analysis in JSON format, including 'explanation' and 'prediction' fields."
+            "content": f"{prompt_template.DOCTOR_ANALYZE_USER.format(question=question)}"
         }
 
         # Call LLM with retry mechanism
@@ -244,27 +235,13 @@ class DoctorAgent(BaseAgent):
                 own_analysis = mem["content"]
                 break
 
-        # Prepare system message for review
-        system_message = {
-            "role": "system",
-            "content": f"You are a physician specializing in {self.specialty}, participating in round {current_round} of a multidisciplinary team consultation. "
-                f"Review the synthesis of multiple doctors' opinions and determine if you agree with the conclusion. "
-                f"Consider your previous analysis and the Coordinator's synthesized opinion to decide whether to agree or provide a different perspective. "
-                f"Your output should be in JSON format, including 'agree' (boolean or 'yes'/'no'), 'reason' (rationale for your decision), "
-                f"and 'prediction' (your suggested prediction if you disagree; if you agree, you can repeat the synthesized prediction) fields."
-        }
-
-        # Add task-specific context
         if task_type == "mortality":
-            system_message["content"] += (
-                f" Remember, the prediction value should reflect the probability of mortality (higher values indicate higher mortality risk)."
-            )
+            task_hint = prompt_template.TASK_HINT_REVIEW_MORTALITY
         elif task_type == "readmission":
-            system_message["content"] += (
-                f" Remember, the prediction value should reflect the probability of readmission within 30 days (higher values indicate higher readmission risk)."
-            )
+            task_hint = prompt_template.TASK_HINT_REVIEW_READMISSION
+        else:
+            task_hint = ""
 
-        # Prepare own previous analysis
         own_analysis_text = ""
         if own_analysis:
             own_analysis_text = f"Your previous analysis:\nExplanation: {own_analysis.get('explanation', '')}\nPrediction: {own_analysis.get('prediction', '')}\n\n"
@@ -272,15 +249,13 @@ class DoctorAgent(BaseAgent):
         synthesis_text = f"Synthesized explanation: {synthesis.get('explanation', '')}\n"
         synthesis_text += f"Suggested prediction: {synthesis.get('prediction', '')}"
 
+        system_message = {
+            "role": "system",
+            "content": f"{prompt_template.DOCTOR_REVIEW_SYSTEM.format(specialty=self.specialty, current_round=current_round, task_hint=task_hint)}"
+        }
         user_message = {
             "role": "user",
-            "content": f"Original data and task: {question[:500]}...\n\n"
-                f"{own_analysis_text}"
-                f"{synthesis_text}\n\n"
-                f"Do you agree with this synthesized result? Please provide your response in JSON format, including:\n"
-                f"1. 'agree': 'yes'/'no'\n"
-                f"2. 'reason': Your rationale for agreeing or disagreeing\n"
-                f"3. 'prediction': Your supported prediction (can be the synthesized prediction if you agree, or your own suggested prediction if you disagree)"
+            "content": f"{prompt_template.DOCTOR_REVIEW_USER.format(question_short=question[:500], own_analysis_text=own_analysis_text, synthesis_text=synthesis_text)}"
         }
 
         # Call LLM with retry mechanism
@@ -398,45 +373,24 @@ class MetaAgent(BaseAgent):
         if self.logger:
             self.logger.info(f"Meta agent synthesizing opinions with model: {self.model_key} in round {current_round}")
 
-        # Prepare system message for synthesis
+        if task_type == "mortality":
+            task_hint = prompt_template.TASK_HINT_MORTALITY
+        elif task_type == "readmission":
+            task_hint = prompt_template.TASK_HINT_READMISSION
+        else:
+            task_hint = ""
+
+        opinions_text = "\n".join([
+            f"Doctor {i+1}:\nExplanation: {opinion.get('explanation', '')}\nPrediction: {opinion.get('prediction', '')}" for i, opinion in enumerate(doctor_opinions)
+        ])
+
         system_message = {
             "role": "system",
-            "content": f"You are a medical consensus coordinator facilitating a multidisciplinary team consultation. "
-                "Synthesize the opinions of multiple specialist doctors into a coherent analysis and conclusion. "
-                "Consider each doctor's expertise and perspective, and weigh their opinions accordingly. "
-                "Your output should be in JSON format, including 'explanation' (synthesized reasoning) and "
-                "'prediction' (consensus probability value between 0 and 1) fields."
+            "content": f"{prompt_template.META_SYNTHESIZE_SYSTEM.format(task_hint=task_hint)}"
         }
-
-        # Add task-specific context
-        if task_type == "mortality":
-            system_message["content"] += (
-                f" For mortality prediction, the 'prediction' field should reflect the probability of the patient "
-                f"not surviving their hospital stay (higher values indicate higher mortality risk)."
-            )
-        elif task_type == "readmission":
-            system_message["content"] += (
-                f" For readmission prediction, the 'prediction' field should reflect the probability of patient "
-                f"readmission within 30 days post-discharge (higher values indicate higher readmission risk)."
-            )
-
-        # Format doctors' opinions as input
-        formatted_opinions = []
-        for i, opinion in enumerate(doctor_opinions):
-            formatted_opinion = f"Doctor {i+1}:\n"
-            formatted_opinion += f"Explanation: {opinion.get('explanation', '')}\n"
-            formatted_opinion += f"Prediction: {opinion.get('prediction', '')}\n"
-            formatted_opinions.append(formatted_opinion)
-
-        opinions_text = "\n".join(formatted_opinions)
-
-        # Prepare user message with all opinions
         user_message = {
             "role": "user",
-            "content": f"EHR data and task: {question[:500]}...\n\n"
-                f"Doctors' Opinions:\n{opinions_text}\n\n"
-                f"Please synthesize these opinions into a consensus view. Provide your synthesis in JSON format, including "
-                f"'explanation' (comprehensive reasoning) and 'prediction' (probability value between 0 and 1) fields."
+            "content": f"{prompt_template.META_SYNTHESIZE_USER.format(question_short=question[:500], opinions_text=opinions_text)}"
         }
 
         # Call LLM with retry mechanism
@@ -517,74 +471,36 @@ class MetaAgent(BaseAgent):
         }
 
         if all_agree:
-            system_message["content"] += "All doctors agree with your synthesis, generate a final report."
+            decision_status = "All doctors agree with your synthesis, generate a final report."
         elif reached_max_rounds:
-            system_message["content"] += (
-                f"Maximum number of discussion rounds ({max_rounds}) reached without full consensus. "
-                f"Make a final decision using majority opinion approach."
-            )
+            decision_status = f"Maximum number of discussion rounds ({max_rounds}) reached without full consensus. Make a final decision using majority opinion approach."
         else:
-            system_message["content"] += (
-                "Not all doctors agree with your synthesis, but a decision for the current round is needed."
-            )
+            decision_status = "Not all doctors agree with your synthesis, but a decision for the current round is needed."
 
-        system_message["content"] += (
-            " Your output should be in JSON format, including 'explanation' (final reasoning) and "
-            "'prediction' (final probability value between 0 and 1) fields."
-        )
-
-        # Add task-specific context
         if task_type == "mortality":
-            system_message["content"] += (
-                f" For mortality prediction, the 'prediction' field should reflect the probability of the patient "
-                f"not surviving their hospital stay (higher values indicate higher mortality risk)."
-            )
+            task_hint = prompt_template.TASK_HINT_MORTALITY
         elif task_type == "readmission":
-            system_message["content"] += (
-                f" For readmission prediction, the 'prediction' field should reflect the probability of patient "
-                f"readmission within 30 days post-discharge (higher values indicate higher readmission risk)."
-            )
+            task_hint = prompt_template.TASK_HINT_READMISSION
+        else:
+            task_hint = ""
 
-        # Format doctor reviews
-        formatted_reviews = []
-        for i, review_item in enumerate(doctor_reviews): # Changed variable name to avoid confusion with dict.get('review')
-            review = review_item.get('review', {}) # Get the nested review dictionary
-            formatted_review = f"Doctor {i+1} ({review_item.get('specialty', 'Unknown')}):\n" # Include specialty in review summary
-            formatted_review += f"Agree: {'Yes' if review.get('agree', False) else 'No'}\n"
-            formatted_review += f"Reason: {review.get('reason', '')}\n"
-            formatted_review += f"Prediction: {review.get('prediction', '')}\n"
-            formatted_reviews.append(formatted_review)
-
-        reviews_text = "\n".join(formatted_reviews)
-
-        # Prepare current synthesis text
+        reviews_text = "\n".join([
+            f"Doctor {i+1} ({review_item.get('specialty', 'Unknown')}):\nAgree: {'Yes' if review_item.get('review', {}).get('agree', False) else 'No'}\nReason: {review_item.get('review', {}).get('reason', '')}\nPrediction: {review_item.get('review', {}).get('prediction', '')}" for i, review_item in enumerate(doctor_reviews)
+        ])
         current_synthesis_text = (
             f"Current synthesized explanation: {current_synthesis.get('explanation', '')}\n"
             f"Current suggested prediction: {current_synthesis.get('prediction', '')}"
         )
-
         decision_type = "final" if all_agree or reached_max_rounds else "current round"
+        previous_syntheses_text = previous_syntheses_text if 'previous_syntheses_text' in locals() else "No previous syntheses available."
 
-        # Review previous rounds' syntheses from memory
-        previous_syntheses = []
-        for i, mem in enumerate(self.memory):
-            if mem["type"] == "synthesis" and mem["round"] < current_round:
-                prev = f"Round {mem['round']} synthesis:\n"
-                prev += f"Explanation: {mem['content'].get('explanation', '')}\n"
-                prev += f"Prediction: {mem['content'].get('prediction', '')}"
-                previous_syntheses.append(prev)
-
-        previous_syntheses_text = "\n\n".join(previous_syntheses) if previous_syntheses else "No previous syntheses available."
-
-        # Prepare user message
+        system_message = {
+            "role": "system",
+            "content": f"{prompt_template.META_DECISION_SYSTEM.format(decision_status=decision_status, task_hint=task_hint)}"
+        }
         user_message = {
             "role": "user",
-            "content": f"EHR data and task: {question[:500]}...\n\n"
-                      f"{current_synthesis_text}\n\n"
-                      f"Doctor Reviews:\n{reviews_text}\n\n"
-                      f"Previous Rounds:\n{previous_syntheses_text}\n\n"
-                      f"Please provide your {decision_type} decision, "
-                      f"in JSON format, including 'explanation' and 'prediction' fields."
+            "content": f"{prompt_template.META_DECISION_USER.format(question_short=question[:500], current_synthesis_text=current_synthesis_text, reviews_text=reviews_text, previous_syntheses_text=previous_syntheses_text, decision_type=decision_type)}"
         }
 
         # Call LLM with retry mechanism
@@ -647,16 +563,11 @@ class EvaluateAgent(BaseAgent):
         """
         system_message = {
             "role": "system",
-            "content": "You are a medical AI evaluation expert. Please score each doctor's preliminary report based on the following criteria:\n"
-                "The similarity between the preliminary report and the final team report's conclusion and prediction value (10 points, the closer the better).\n"
-                "Please combine the above two criteria to give a total score between 0 and 10, and output in JSON format: {\"score\": score, \"reason\": scoring reason}."
+            "content": f"{prompt_template.EVALUATE_SYSTEM}"
         }
         user_message = {
             "role": "user",
-            "content": f"EHR data and task: {question[:500]}...\n\n"
-                f"Doctor preliminary report:\nExplanation: {doctor_report.get('explanation', '')}\nPrediction: {doctor_report.get('prediction', '')}\n\n"
-                f"Final team report:\nExplanation: {final_report.get('explanation', '')}\nPrediction: {final_report.get('prediction', '')}\n\n"
-                f"Task type: {task_type}. Please strictly follow the requirements to score and output JSON."
+            "content": f"{prompt_template.EVALUATE_USER.format(question_short=question[:500], doctor_explanation=doctor_report.get('explanation', ''), doctor_prediction=doctor_report.get('prediction', ''), final_explanation=final_report.get('explanation', ''), final_prediction=final_report.get('prediction', ''), task_type=task_type)}"
         }
         # Call LLM with retry mechanism
         response_text = self.call_llm(system_message, user_message)
