@@ -200,7 +200,6 @@ class DoctorAgent(BaseAgent):
             # Add to memory
             self.memory.append({
                 "type": "analysis",
-                "round": len(self.memory) // 2 + 1,
                 "content": result
             })
             return result
@@ -214,7 +213,6 @@ class DoctorAgent(BaseAgent):
             # Add to memory
             self.memory.append({
                 "type": "analysis",
-                "round": len(self.memory) // 2 + 1,
                 "content": result
             })
             return result
@@ -222,7 +220,8 @@ class DoctorAgent(BaseAgent):
     def review_synthesis(self,
                         question: str,
                         synthesis: Dict[str, Any],
-                        task_type: str) -> Dict[str, Any]:
+                        task_type: str,
+                        current_round: int = 1) -> Dict[str, Any]:
         """
         Review the meta agent's synthesis.
 
@@ -230,15 +229,13 @@ class DoctorAgent(BaseAgent):
             question: Original question with EHR data
             synthesis: Meta agent's synthesis
             task_type: Type of task (mortality or readmission)
+            current_round: Current round
 
         Returns:
             Dictionary containing agreement status and possible rebuttal
         """
         if self.logger:
             self.logger.info(f"Doctor {self.agent_id} ({self.specialty}) reviewing synthesis with model: {self.model_key}")
-
-        # Get current round
-        current_round = len(self.memory) // 2 + 1
 
         # Get doctor's own most recent analysis
         own_analysis = None
@@ -384,27 +381,27 @@ class MetaAgent(BaseAgent):
     def synthesize_opinions(self,
                            question: str,
                            doctor_opinions: List[Dict[str, Any]],
-                           current_round: int = 1,
-                           task_type: str = "mortality") -> Dict[str, Any]:
+                           task_type: str = "mortality",
+                           current_round: int = 0) -> Dict[str, Any]:
         """
         Synthesize multiple doctors' opinions.
 
         Args:
             question: Original question with EHR data
             doctor_opinions: List of doctor opinions
-            current_round: Current discussion round
             task_type: Type of task (mortality or readmission)
+            current_round: Current round
 
         Returns:
             Dictionary containing synthesized explanation and prediction
         """
         if self.logger:
-            self.logger.info(f"Meta agent synthesizing round {current_round} opinions with model: {self.model_key}")
+            self.logger.info(f"Meta agent synthesizing opinions with model: {self.model_key} in round {current_round}")
 
         # Prepare system message for synthesis
         system_message = {
             "role": "system",
-            "content": f"You are a medical consensus coordinator facilitating round {current_round} of a multidisciplinary team consultation. "
+            "content": f"You are a medical consensus coordinator facilitating a multidisciplinary team consultation. "
                 "Synthesize the opinions of multiple specialist doctors into a coherent analysis and conclusion. "
                 "Consider each doctor's expertise and perspective, and weigh their opinions accordingly. "
                 "Your output should be in JSON format, including 'explanation' (synthesized reasoning) and "
@@ -437,7 +434,7 @@ class MetaAgent(BaseAgent):
         user_message = {
             "role": "user",
             "content": f"EHR data and task: {question[:500]}...\n\n"
-                f"Round {current_round} Doctors' Opinions:\n{opinions_text}\n\n"
+                f"Doctors' Opinions:\n{opinions_text}\n\n"
                 f"Please synthesize these opinions into a consensus view. Provide your synthesis in JSON format, including "
                 f"'explanation' (comprehensive reasoning) and 'prediction' (probability value between 0 and 1) fields."
         }
@@ -468,7 +465,6 @@ class MetaAgent(BaseAgent):
             # Add to memory
             self.memory.append({
                 "type": "synthesis",
-                "round": current_round,
                 "content": result
             })
             return result
@@ -482,7 +478,6 @@ class MetaAgent(BaseAgent):
             # Add to memory
             self.memory.append({
                 "type": "synthesis",
-                "round": current_round,
                 "content": result
             })
             return result
@@ -652,20 +647,16 @@ class EvaluateAgent(BaseAgent):
         """
         system_message = {
             "role": "system",
-            "content": (
-                "You are a medical AI evaluation expert. Please score each doctor's preliminary report based on the following criteria:\n"
+            "content": "You are a medical AI evaluation expert. Please score each doctor's preliminary report based on the following criteria:\n"
                 "The similarity between the preliminary report and the final team report's conclusion and prediction value (10 points, the closer the better).\n"
                 "Please combine the above two criteria to give a total score between 0 and 10, and output in JSON format: {\"score\": score, \"reason\": scoring reason}."
-            )
         }
         user_message = {
             "role": "user",
-            "content": (
-                f"EHR data and task: {question[:500]}...\n\n"
+            "content": f"EHR data and task: {question[:500]}...\n\n"
                 f"Doctor preliminary report:\nExplanation: {doctor_report.get('explanation', '')}\nPrediction: {doctor_report.get('prediction', '')}\n\n"
                 f"Final team report:\nExplanation: {final_report.get('explanation', '')}\nPrediction: {final_report.get('prediction', '')}\n\n"
                 f"Task type: {task_type}. Please strictly follow the requirements to score and output JSON."
-            )
         }
         # Call LLM with retry mechanism
         response_text = self.call_llm(system_message, user_message)
@@ -826,8 +817,7 @@ class MDTConsultation:
         if self.logger:
             self.logger.info("Meta agent synthesizing opinions")
         synthesis = self.meta_agent.synthesize_opinions(
-            question, doctor_opinions,
-            current_round, task_type
+            question, doctor_opinions, task_type
         )
         case_history["synthesis"] = synthesis
         if self.logger:
@@ -845,7 +835,7 @@ class MDTConsultation:
             for i, doctor in enumerate(self.doctor_agents):
                 if self.logger:
                     self.logger.info(f"Doctor {i+1} ({doctor.specialty}) reviewing synthesis")
-                review = doctor.review_synthesis(question, synthesis, task_type)
+                review = doctor.review_synthesis(question, synthesis, task_type, current_round)
                 # Store original review with doctor details for meta agent to access
                 doctor_reviews.append({
                     "doctor_id": doctor.agent_id,
