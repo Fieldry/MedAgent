@@ -355,7 +355,8 @@ class MetaAgent(BaseAgent):
 
     def synthesize_opinions(self,
                            question: str,
-                           doctor_opinions: List[Dict[str, Any]],
+                           doctor_opinions: List[Dict[str, Any]]=None,
+                           doctor_reviews: List[Dict[str, Any]]=None,
                            task_type: str = "mortality",
                            current_round: int = 0) -> Dict[str, Any]:
         """
@@ -364,6 +365,7 @@ class MetaAgent(BaseAgent):
         Args:
             question: Original question with EHR data
             doctor_opinions: List of doctor opinions
+            doctor_reviews: List of doctor reviews
             task_type: Type of task (mortality or readmission)
             current_round: Current round
 
@@ -380,18 +382,42 @@ class MetaAgent(BaseAgent):
         else:
             task_hint = ""
 
-        opinions_text = "\n".join([
-            f"Doctor {i+1}:\nExplanation: {opinion.get('explanation', '')}\nPrediction: {opinion.get('prediction', '')}" for i, opinion in enumerate(doctor_opinions)
-        ])
+        if current_round == 0:
+            opinions_text = "\n".join([
+                f"Doctor {i+1}:\nExplanation: {opinion.get('explanation', '')}\nPrediction: {opinion.get('prediction', '')}" for i, opinion in enumerate(doctor_opinions)
+            ])
+            system_message = {
+                "role": "system",
+                "content": f"{prompt_template.META_SYNTHESIZE_SYSTEM.format(task_hint=task_hint)}"
+            }
+            user_message = {
+                "role": "user",
+                "content": f"{prompt_template.META_SYNTHESIZE_USER.format(question_short=question[:500], opinions_text=opinions_text)}"
+            }
+        else:
+            # 多轮共识
+            prev_synthesis = None
+            for mem in reversed(self.memory):
+                if mem["type"] == "synthesis" and mem["round"] < current_round:
+                    prev_synthesis = mem["content"]
+                    break
+            prev_synthesis_str = json.dumps(prev_synthesis, ensure_ascii=False, indent=2) if prev_synthesis else "None"
 
-        system_message = {
-            "role": "system",
-            "content": f"{prompt_template.META_SYNTHESIZE_SYSTEM.format(task_hint=task_hint)}"
-        }
-        user_message = {
-            "role": "user",
-            "content": f"{prompt_template.META_SYNTHESIZE_USER.format(question_short=question[:500], opinions_text=opinions_text)}"
-        }
+            doctor_reviews_str = "\n".join([
+                f"Doctor {i+1}:\n" +
+                f"Agree: {'Yes' if review.get('review', {}).get('agree', False) else 'No'}\n" +
+                f"Reason: {review.get('review', {}).get('reason', '')}\n" +
+                f"Prediction: {review.get('review', {}).get('prediction', '')}"
+                for i, review in enumerate(doctor_reviews or [])
+            ])
+            system_message = {
+                "role": "system",
+                "content": f"{prompt_template.META_RESYNTHESIZE_SYSTEM.format(current_round=current_round, task_hint=task_hint)}"
+            }
+            user_message = {
+                "role": "user",
+                "content": f"{prompt_template.META_RESYNTHESIZE_USER.format(question_short=question[:500], prev_synthesis=prev_synthesis_str, doctor_reviews=doctor_reviews_str)}"
+            }
 
         # Call LLM with retry mechanism
         response_text = self.call_llm(system_message, user_message)
@@ -419,6 +445,7 @@ class MetaAgent(BaseAgent):
             # Add to memory
             self.memory.append({
                 "type": "synthesis",
+                "round": current_round,
                 "content": result
             })
             return result
@@ -432,6 +459,7 @@ class MetaAgent(BaseAgent):
             # Add to memory
             self.memory.append({
                 "type": "synthesis",
+                "round": current_round,
                 "content": result
             })
             return result
@@ -728,7 +756,7 @@ class MDTConsultation:
         if self.logger:
             self.logger.info("Meta agent synthesizing opinions")
         synthesis = self.meta_agent.synthesize_opinions(
-            question, doctor_opinions, task_type
+            question, doctor_opinions=doctor_opinions, task_type=task_type, current_round=current_round
         )
         case_history["synthesis"] = synthesis
         if self.logger:
@@ -739,8 +767,9 @@ class MDTConsultation:
             current_round += 1
             if self.logger:
                 self.logger.info(f"Starting round {current_round}")
-            round_data = {"round": current_round, "reviews": []}
+            round_data = {"round": current_round, "reviews": [], "synthesis": None}
 
+            # Step 3.1: Doctor agent reviews synthesis
             doctor_reviews = []
             all_agree = True
             for i, doctor in enumerate(self.doctor_agents):
@@ -764,31 +793,36 @@ class MDTConsultation:
                 if self.logger:
                     self.logger.info(f"Doctor {i+1} agrees: {'Yes' if agrees else 'No'}")
 
+            # Step 3.2: Meta agent synthesizes opinions
+            if self.logger:
+                self.logger.info("Meta agent synthesizing opinions")
+            synthesis = self.meta_agent.synthesize_opinions(
+                question, doctor_reviews=doctor_reviews, task_type=task_type, current_round=current_round
+            )
+            round_data["synthesis"] = synthesis
+
             # Add round data to history
             case_history["rounds"].append(round_data)
 
             # Step 4: Meta agent makes decision based on reviews
-            decision = self.meta_agent.make_final_decision(
-                question, doctor_reviews,
-                synthesis, current_round, self.max_rounds, task_type
-            )
+            # decision = self.meta_agent.make_final_decision(
+            #     question, doctor_reviews,
+            #     synthesis, current_round, self.max_rounds, task_type
+            # )
 
             # Check if consensus reached
             if all_agree:
-                consensus_reached = True
-                final_decision = decision
                 if self.logger:
                     self.logger.info("Consensus reached")
-            else:
+                consensus_reached = True
+                final_decision = synthesis
+            elif current_round == self.max_rounds:
+                # If max rounds reached, use the last round's decision as final
                 if self.logger:
-                    self.logger.info("No consensus reached, continuing to next round")
-                if current_round == self.max_rounds:
-                    # If max rounds reached, use the last round's decision as final
-                    final_decision = decision
-
-        # If no final decision, fallback to the last round's decision
-        if not final_decision:
-            final_decision = decision if 'decision' in locals() else {"explanation": "No decision could be made.", "prediction": 0.501}
+                    self.logger.info("Max rounds reached, using the last round's decision as final")
+                final_decision = synthesis
+            else:
+                self.logger.info("No consensus reached, continuing to next round")
 
         if self.logger:
             self.logger.info(f"Final prediction: {final_decision.get('prediction', '')}")
@@ -799,7 +833,7 @@ class MDTConsultation:
             # Find the first round analysis
             first_analysis = None
             for mem in doctor.memory:
-                if mem["type"] == "analysis" and mem["round"] == 1:
+                if mem["type"] == "analysis" and mem["round"] == 0:
                     first_analysis = mem["content"]
                     break
             if first_analysis is not None:

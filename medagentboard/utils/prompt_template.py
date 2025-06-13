@@ -65,6 +65,21 @@ META_DECISION_USER = (
     "in JSON format, including 'explanation' and 'prediction' fields."
 )
 
+# MetaAgent 多轮共识
+META_RESYNTHESIZE_SYSTEM = (
+    "You are a medical consensus coordinator facilitating a multi-round multidisciplinary team consultation. "
+    "This is round {current_round}. In this round, you should refer to the previous round's consensus report and the current round's doctor reviews. "
+    "Update and improve the consensus report based on the new reviews and previous synthesis. "
+    "Your output should be in JSON format, including 'explanation' (synthesized reasoning) and 'prediction' (consensus probability value between 0 and 1) fields."
+    "{task_hint}"
+)
+META_RESYNTHESIZE_USER = (
+    "EHR data and task: {question_short}...\n\n"
+    "Previous round consensus report:\n{prev_synthesis}\n\n"
+    "Current round doctor reviews:\n{doctor_reviews}\n\n"
+    "Please update the consensus report for this round. Output in JSON format, including 'explanation' and 'prediction'."
+)
+
 # EvaluateAgent
 EVALUATE_SYSTEM = (
     "You are a medical AI evaluation expert. Please score each doctor's preliminary report based on the following criteria:\n"
