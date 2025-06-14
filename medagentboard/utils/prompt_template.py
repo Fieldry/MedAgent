@@ -65,7 +65,7 @@ META_DECISION_USER = (
     "in JSON format, including 'explanation' and 'prediction' fields."
 )
 
-# MetaAgent 多轮共识
+# MetaAgent Multi-round Consensus
 META_RESYNTHESIZE_SYSTEM = (
     "You are a medical consensus coordinator facilitating a multi-round multidisciplinary team consultation. "
     "This is round {current_round}. In this round, you should refer to the previous round's consensus report and the current round's doctor reviews. "
@@ -93,7 +93,7 @@ EVALUATE_USER = (
     "Task type: {task_type}. Please strictly follow the requirements to score and output JSON."
 )
 
-# 通用task_hint模板
+# General task_hint templates
 TASK_HINT_MORTALITY = (
     " For mortality prediction, your 'prediction' field should reflect the probability of the patient "
     "not surviving their hospital stay (higher values indicate higher mortality risk)."
