@@ -17,9 +17,10 @@ from typing import Dict, Any, List
 
 from openai import OpenAI
 
+from medagentboard.utils import prompt_template
 from medagentboard.utils.llm_configs import LLM_MODELS_SETTINGS
 from medagentboard.utils.json_utils import load_json, save_json, preprocess_response_string
-from medagentboard.utils import prompt_template
+from medagentboard.utils.litsense_utils import litsense_api_call
 
 
 class AgentType(Enum):
@@ -33,10 +34,10 @@ class BaseAgent:
     """Base class for all agents in the EHR prediction framework."""
 
     def __init__(self,
-                 agent_id: str,
-                 agent_type: AgentType,
-                 model_key: str = "deepseek-v3-official",
-                 logger=None):
+        agent_id: str,
+        agent_type: AgentType,
+        model_key: str = "deepseek-v3-official",
+        logger=None):
         """
         Initialize the base agent.
 
@@ -64,9 +65,9 @@ class BaseAgent:
         self.model_name = model_settings["model_name"]
 
     def call_llm(self,
-                system_message: Dict[str, str],
-                user_message: Dict[str, Any],
-                max_retries: int = 3) -> str:
+        system_message: Dict[str, str],
+        user_message: Dict[str, Any],
+        max_retries: int = 3) -> str:
         """
         Call the LLM with messages and handle retries.
 
@@ -113,10 +114,10 @@ class DoctorAgent(BaseAgent):
     """Doctor agent with a clinical specialty for EHR predictive modeling."""
 
     def __init__(self,
-                 agent_id: str,
-                 specialty: str,
-                 model_key: str = "deepseek-v3-official",
-                 logger=None):
+        agent_id: str,
+        specialty: str,
+        model_key: str = "deepseek-v3-official",
+        logger=None):
         """
         Initialize a doctor agent.
 
@@ -131,9 +132,37 @@ class DoctorAgent(BaseAgent):
         if self.logger:
             self.logger.info(f"Initializing doctor agent, ID: {agent_id}, Specialty: {specialty}, Model: {model_key}")
 
+    def _generate_rag_query(self, question: str, task_type: str) -> str:
+        """
+        Generates a search query for the RAG tool based on the EHR data and task.
+        """
+        if self.logger:
+            self.logger.info(f"Doctor {self.agent_id} generating RAG query for task: {task_type}")
+
+        system_message = {
+            "role": "system",
+            "content": prompt_template.RAG_QUERY_GENERATION_SYSTEM
+        }
+        user_message = {
+            "role": "user",
+            "content": prompt_template.RAG_QUERY_GENERATION_USER.format(
+                question_short=question[:2000], # Pass a sufficiently long part of the question
+                task_type=task_type
+            )
+        }
+
+        # Call LLM to generate the query
+        query_text = self.call_llm(system_message, user_message)
+        # Clean up potential leading/trailing quotes or extra formatting from LLM
+        query_text = query_text.strip().strip('"')
+
+        if self.logger:
+            self.logger.info(f"Doctor {self.agent_id} generated RAG query: '{query_text}'")
+        return query_text
+
     def analyze_case(self,
-                    question: str,
-                    task_type: str) -> Dict[str, Any]:
+        question: str,
+        task_type: str) -> Dict[str, Any]:
         """
         Analyze an EHR case and predict outcome probability, including RAG retrieval.
 
@@ -154,13 +183,22 @@ class DoctorAgent(BaseAgent):
         else:
             task_hint = ""
 
+        # Step 1: Generate RAG query
+        rag_query = self._generate_rag_query(question, task_type)
+
+        # Step 2: Call the simulated RAG tool with the generated query
+        retrieved_literature = litsense_api_call(rag_query)
+        if self.logger:
+            self.logger.info(f"Doctor {self.agent_id} retrieved literature (first 200 chars): {retrieved_literature[:200]}...")
+
+
         system_message = {
             "role": "system",
             "content": f"{prompt_template.DOCTOR_ANALYZE_SYSTEM.format(specialty=self.specialty, task_hint=task_hint)}"
         }
         user_message = {
             "role": "user",
-            "content": f"{prompt_template.DOCTOR_ANALYZE_USER.format(question=question)}"
+            "content": f"{prompt_template.DOCTOR_ANALYZE_USER.format(question=question, retrieved_literature=retrieved_literature)}"
         }
 
         # Call LLM with retry mechanism
@@ -209,10 +247,10 @@ class DoctorAgent(BaseAgent):
             return result
 
     def review_synthesis(self,
-                        question: str,
-                        synthesis: Dict[str, Any],
-                        task_type: str,
-                        current_round: int = 1) -> Dict[str, Any]:
+        question: str,
+        synthesis: Dict[str, Any],
+        task_type: str,
+        current_round: int = 1) -> Dict[str, Any]:
         """
         Review the meta agent's synthesis, including RAG retrieval.
 
@@ -354,11 +392,11 @@ class MetaAgent(BaseAgent):
             self.logger.info(f"Initializing meta agent, ID: {agent_id}, Model: {model_key}")
 
     def synthesize_opinions(self,
-                           question: str,
-                           doctor_opinions: List[Dict[str, Any]]=None,
-                           doctor_reviews: List[Dict[str, Any]]=None,
-                           task_type: str = "mortality",
-                           current_round: int = 0) -> Dict[str, Any]:
+        question: str,
+        doctor_opinions: List[Dict[str, Any]]=None,
+        doctor_reviews: List[Dict[str, Any]]=None,
+        task_type: str = "mortality",
+        current_round: int = 0) -> Dict[str, Any]:
         """
         Synthesize multiple doctors' opinions.
 
@@ -465,12 +503,12 @@ class MetaAgent(BaseAgent):
             return result
 
     def make_final_decision(self,
-                           question: str,
-                           doctor_reviews: List[Dict[str, Any]],
-                           current_synthesis: Dict[str, Any],
-                           current_round: int,
-                           max_rounds: int,
-                           task_type: str = "mortality") -> Dict[str, Any]:
+        question: str,
+        doctor_reviews: List[Dict[str, Any]],
+        current_synthesis: Dict[str, Any],
+        current_round: int,
+        max_rounds: int,
+        task_type: str = "mortality") -> Dict[str, Any]:
         """
         Make a final decision based on doctor reviews.
 
@@ -650,12 +688,12 @@ class MDTConsultation:
     """Multi-disciplinary team consultation coordinator for EHR prediction."""
 
     def __init__(self,
-                max_rounds: int = 3,
-                doctor_configs: List[Dict] = None,
-                meta_model_key: str = "deepseek-v3-official",
-                evaluator_model_key: str = "deepseek-v3-official",
-                logger=None
-        ):
+        max_rounds: int = 3,
+        doctor_configs: List[Dict] = None,
+        meta_model_key: str = "deepseek-v3-official",
+        evaluator_model_key: str = "deepseek-v3-official",
+        logger=None
+    ):
         """
         Initialize MDT consultation.
 
@@ -701,9 +739,9 @@ class MDTConsultation:
             self.logger.info(f"Initialized MDT consultation, max_rounds={max_rounds}, doctors: [{doctor_info}], meta_model={meta_model_key}")
 
     def run_consultation(self,
-                        qid: str,
-                        question: str,
-                        task_type: str = "mortality") -> Dict[str, Any]:
+        qid: str,
+        question: str,
+        task_type: str = "mortality") -> Dict[str, Any]:
         """
         Run the MDT consultation process.
 
