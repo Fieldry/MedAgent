@@ -80,13 +80,10 @@ class BaseAgent:
         """
         retries = 0
         # TODO: improve input context length limit
-        print(self.client.api_key)
-        print(self.model_name)
-        print(self.client.base_url)
         while retries < max_retries:
             try:
                 if self.logger:
-                    self.logger.info(f"Agent {self.agent_id} calling LLM, system message: {system_message['content'][:50]}...")
+                    self.logger.info(f"Agent {self.agent_id} calling LLM, system message: {system_message['content'][:100]}...")
                 completion = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=[system_message, user_message],
@@ -101,7 +98,7 @@ class BaseAgent:
 
                 response = "".join(response_chunks)
                 if self.logger:
-                    self.logger.info(f"Agent {self.agent_id} received response: {response[:50]}...")
+                    self.logger.info(f"Agent {self.agent_id} received response: {response[:100]}...")
                 return response
             except Exception as e:
                 retries += 1
@@ -117,7 +114,7 @@ class DoctorAgent(BaseAgent):
 
     def __init__(self,
                  agent_id: str,
-                 specialty: str, # 新增 specialty 参数
+                 specialty: str,
                  model_key: str = "deepseek-v3-official",
                  logger=None):
         """
@@ -130,7 +127,7 @@ class DoctorAgent(BaseAgent):
             logger: Logger object for logging
         """
         super().__init__(agent_id, AgentType.DOCTOR, model_key, logger=logger)
-        self.specialty = specialty # 设置 specialty
+        self.specialty = specialty
         if self.logger:
             self.logger.info(f"Initializing doctor agent, ID: {agent_id}, Specialty: {specialty}, Model: {model_key}")
 
@@ -138,7 +135,7 @@ class DoctorAgent(BaseAgent):
                     question: str,
                     task_type: str) -> Dict[str, Any]:
         """
-        Analyze an EHR case and predict outcome probability.
+        Analyze an EHR case and predict outcome probability, including RAG retrieval.
 
         Args:
             question: Question containing structured EHR time series data
@@ -173,7 +170,7 @@ class DoctorAgent(BaseAgent):
         try:
             result = json.loads(preprocess_response_string(response_text))
             if self.logger:
-                self.logger.info(f"Doctor {self.agent_id} response successfully parsed")
+                self.logger.info(f"Doctor {self.agent_id} response successfully parsed.")
 
             # Ensure prediction is a float between 0 and 1
             if "prediction" in result:
@@ -181,7 +178,7 @@ class DoctorAgent(BaseAgent):
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
                 except Exception:
-                    result["prediction"] = 0.501  # Default fallback
+                    result["prediction"] = 0.501
             else:
                 result["prediction"] = 0.501
 
@@ -191,20 +188,23 @@ class DoctorAgent(BaseAgent):
             # Add to memory
             self.memory.append({
                 "type": "analysis",
-                "content": result
+                "content": result,
+                "round": 0
             })
             return result
         except json.JSONDecodeError:
             # If JSON format is not correct, use fallback parsing
             if self.logger:
-                self.logger.warning(f"Doctor {self.agent_id} response is not valid JSON, using fallback parsing")
+                self.logger.warning(f"Doctor {self.agent_id} response is not valid JSON, using fallback parsing.")
             result = parse_structured_output(response_text)
             result["response_text"] = response_text
+            result["retrieved_literature"] = retrieved_literature
 
             # Add to memory
             self.memory.append({
                 "type": "analysis",
-                "content": result
+                "content": result,
+                "round": 0
             })
             return result
 
@@ -214,7 +214,7 @@ class DoctorAgent(BaseAgent):
                         task_type: str,
                         current_round: int = 1) -> Dict[str, Any]:
         """
-        Review the meta agent's synthesis.
+        Review the meta agent's synthesis, including RAG retrieval.
 
         Args:
             question: Original question with EHR data
@@ -226,7 +226,7 @@ class DoctorAgent(BaseAgent):
             Dictionary containing agreement status and possible rebuttal
         """
         if self.logger:
-            self.logger.info(f"Doctor {self.agent_id} ({self.specialty}) reviewing synthesis with model: {self.model_key}")
+            self.logger.info(f"Doctor {self.agent_id} ({self.specialty}) reviewing synthesis with {self.model_key} and RAG.")
 
         # Get doctor's own most recent analysis
         own_analysis = None
@@ -277,7 +277,7 @@ class DoctorAgent(BaseAgent):
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
                 except Exception:
-                    result["prediction"] = 0.501  # Default fallback
+                    result["prediction"] = 0.501
             else:
                 result["prediction"] = 0.501
 
@@ -312,7 +312,7 @@ class DoctorAgent(BaseAgent):
                         pred_value = max(0.0, min(1.0, pred_value))
                         result["prediction"] = pred_value
                     except Exception:
-                        result["prediction"] = 0.501  # Default fallback
+                        result["prediction"] = 0.501
 
             # Ensure required fields
             if "agree" not in result:
@@ -435,7 +435,7 @@ class MetaAgent(BaseAgent):
                     result["prediction"] = max(0.0, min(1.0, pred))
                 except Exception:
                     print(response_text)
-                    result["prediction"] = 0.501  # Default fallback
+                    result["prediction"] = 0.501
             else:
                 result["prediction"] = 0.501
 
@@ -546,7 +546,7 @@ class MetaAgent(BaseAgent):
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
                 except Exception:
-                    result["prediction"] = 0.501  # Default fallback
+                    result["prediction"] = 0.501
             else:
                 result["prediction"] = 0.501
 
@@ -671,7 +671,7 @@ class MDTConsultation:
             {"specialty": "General Medicine", "model_key": "deepseek-v3-official"},
             {"specialty": "General Medicine", "model_key": "deepseek-v3-official"},
             {"specialty": "General Medicine", "model_key": "deepseek-v3-official"},
-        ] # Added default specialties for clarity
+        ]
 
         self.meta_model_key = meta_model_key
         self.evaluator_model_key = evaluator_model_key
