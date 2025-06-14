@@ -617,13 +617,16 @@ class MetaAgent(BaseAgent):
 
 
 class EvaluateAgent(BaseAgent):
-    """Evaluator Agent: Evaluate the quality of each DoctorAgent's preliminary report and its similarity to the final report, scoring 10 points."""
+    """Evaluator Agent:
+    1. Evaluate the quality of each DoctorAgent's preliminary report and its similarity to the final report, scoring 10 points.
+    2. Evaluate the quality of the final patient report based on Factuality, Safety, and Explainability, using an LLM-as-a-judger approach.
+    Scores are on a scale of 1 to 5."""
     def __init__(self, agent_id: str, model_key: str = "deepseek-v3-official", logger=None):
         super().__init__(agent_id, AgentType.EVALUATOR, model_key, logger=logger)
         if self.logger:
             self.logger.info(f"Initializing evaluator agent, ID: {agent_id}, Model: {model_key}")
 
-    def evaluate(self, doctor_report: Dict[str, Any], final_report: Dict[str, Any], question: str, task_type: str) -> Dict[str, Any]:
+    def evaluate_preliminary_report(self, doctor_report: Dict[str, Any], final_report: Dict[str, Any], question: str, task_type: str) -> Dict[str, Any]:
         """
         Evaluate the quality of each DoctorAgent's preliminary report and its similarity to the final report, returning a score between 0 and 10.
         """
@@ -682,6 +685,80 @@ class EvaluateAgent(BaseAgent):
 
             result["response_text"] = response_text
             return result
+
+    def evaluate_final_report(self,
+        original_question: str,
+        final_report_explanation: str,
+        final_report_prediction: float,
+        task_type: str) -> Dict[str, Any]:
+        """
+        Evaluate the AI-generated final patient report for trustworthiness dimensions.
+
+        Args:
+            original_question: The complete original input (EHR data + initial model predictions).
+            final_report_explanation: The 'explanation' part of the final generated report.
+            final_report_prediction: The 'prediction' part of the final generated report.
+            task_type: Type of task (mortality or readmission).
+
+        Returns:
+            Dictionary containing evaluation scores and reasons for Factuality, Safety,
+            and Explainability, plus an overall comment.
+        """
+        if self.logger:
+            self.logger.info(f"Report evaluation agent evaluating report for task '{task_type}'.")
+
+        system_message = {
+            "role": "system",
+            "content": prompt_template.REPORT_EVALUATOR_SYSTEM
+        }
+        user_message = {
+            "role": "user",
+            "content": prompt_template.REPORT_EVALUATOR_USER.format(
+                original_question=original_question,
+                final_explanation=final_report_explanation,
+                final_prediction=final_report_prediction,
+                task_type=task_type
+            )
+        }
+
+        response_text = self.call_llm(system_message, user_message)
+
+        try:
+            # First attempt to parse as clean JSON
+            result = json.loads(preprocess_response_string(response_text))
+
+            # Validate and normalize scores (ensure between 1 and 5)
+            for dim in ["factuality", "safety", "explainability"]:
+                if dim in result and "score" in result[dim]:
+                    try:
+                        score = int(result[dim]["score"])
+                        result[dim]["score"] = max(1, min(5, score))
+                    except (ValueError, TypeError):
+                        result[dim]["score"] = 1 # Default to lowest if parsing fails
+                else:
+                    result[dim] = {"score": 1, "reason": "Missing or invalid score"}
+
+            if self.logger:
+                self.logger.info("Report evaluation agent response successfully parsed.")
+            return result
+        except json.JSONDecodeError:
+            if self.logger:
+                self.logger.warning("Report evaluation agent response is not valid JSON, attempting fallback parsing.")
+            # Fallback parsing for less structured responses
+            # This is a simpler fallback and might need refinement based on actual LLM output patterns
+            result = parse_structured_output_for_final_report(response_text)
+            if self.logger:
+                self.logger.info("Report evaluation agent fallback parsing completed.")
+            return result
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Error processing evaluation response: {e}")
+            return {
+                "factuality": {"score": 1, "reason": f"Parsing error: {e}"},
+                "safety": {"score": 1, "reason": f"Parsing error: {e}"},
+                "explainability": {"score": 1, "reason": f"Parsing error: {e}"},
+                "overall_comment": f"Failed to parse evaluation: {response_text[:100]}..."
+            }
 
 
 class MDTConsultation:
@@ -865,7 +942,9 @@ class MDTConsultation:
         if self.logger:
             self.logger.info(f"Final prediction: {final_decision.get('prediction', '')}")
 
-        # Evaluate each DoctorAgent's preliminary report
+        # Step 4: Evaluate each DoctorAgent's preliminary report
+        if self.logger:
+            self.logger.info("Starting preliminary report evaluation.")
         doctor_scores = []
         for i, doctor in enumerate(self.doctor_agents):
             # Find the first round analysis
@@ -885,6 +964,16 @@ class MDTConsultation:
                 "reason": score_result.get("reason", "")
             })
 
+        # Step 5: Evaluate the final patient report
+        if self.logger:
+            self.logger.info("Starting final report trustworthiness evaluation.")
+        final_report_evaluation = self.evaluator_agent.evaluate_report(
+            original_question=question,
+            final_report_explanation=final_decision.get('explanation', ''),
+            final_report_prediction=final_decision.get('prediction', 0.501),
+            task_type=task_type
+        )
+
         # Calculate processing time
         processing_time = time.time() - start_time
 
@@ -894,6 +983,7 @@ class MDTConsultation:
         case_history["total_rounds"] = current_round
         case_history["processing_time"] = processing_time
         case_history["doctor_scores"] = doctor_scores
+        case_history["report_trustworthiness_evaluation"] = final_report_evaluation
 
         return case_history
 
@@ -944,6 +1034,49 @@ def parse_structured_output(response_text: str) -> Dict[str, Any]:
             result["prediction"] = 0.501  # Default values
 
         return result
+
+
+def parse_structured_output_for_final_report(response_text: str) -> Dict[str, Any]:
+    """
+    Fallback parser for evaluation agent's response, extracting scores and reasons.
+    This is a simplified example; a more robust parser might be needed based on actual LLM output.
+    """
+    result = {
+        "factuality": {"score": 1, "reason": "Could not parse reason."},
+        "safety": {"score": 1, "reason": "Could not parse reason."},
+        "explainability": {"score": 1, "reason": "Could not parse reason."},
+        "overall_comment": "Could not parse overall comment."
+    }
+
+    # Simple regex-like extraction (not perfect for complex cases)
+    lines = response_text.split('\n')
+    current_dim = None
+
+    for line in lines:
+        line = line.strip()
+        if "Factuality:" in line:
+            current_dim = "factuality"
+        elif "Safety:" in line:
+            current_dim = "safety"
+        elif "Explainability:" in line:
+            current_dim = "explainability"
+        elif "Overall Comment:" in line or "Overall comments:" in line:
+            result["overall_comment"] = line.split(":", 1)[1].strip() if ":" in line else line
+            current_dim = None # Reset
+
+        if current_dim:
+            if "Score:" in line:
+                try:
+                    score_str = line.split("Score:", 1)[1].strip().split(" ")[0] # Get first number
+                    score = int(float(score_str)) # Handle floats like 4.0
+                    result[current_dim]["score"] = max(1, min(5, score))
+                except ValueError:
+                    pass
+            if "Reason:" in line:
+                reason = line.split("Reason:", 1)[1].strip()
+                result[current_dim]["reason"] = reason
+
+    return result
 
 
 # Get logger for each patient
