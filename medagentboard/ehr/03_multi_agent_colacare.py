@@ -152,9 +152,13 @@ class DoctorAgent(BaseAgent):
         }
 
         # Call LLM to generate the query
-        query_text = self.call_llm(system_message, user_message)
-        # Clean up potential leading/trailing quotes or extra formatting from LLM
-        query_text = query_text.strip().strip('"')
+        response_text = self.call_llm(system_message, user_message)
+
+        try:
+            result = json.loads(preprocess_response_string(response_text))
+            query_text = result.get("query", "")
+        except json.JSONDecodeError:
+            query_text = response_text.strip().strip('"')
 
         if self.logger:
             self.logger.info(f"Doctor {self.agent_id} generated RAG query: '{query_text}'")
@@ -439,7 +443,10 @@ class MetaAgent(BaseAgent):
                 if mem["type"] == "synthesis" and mem["round"] < current_round:
                     prev_synthesis = mem["content"]
                     break
-            prev_synthesis_str = json.dumps(prev_synthesis, ensure_ascii=False, indent=2) if prev_synthesis else "None"
+            prev_synthesis_str = json.dumps({
+                "explanation": prev_synthesis.get("explanation", ""),
+                "prediction": prev_synthesis.get("prediction", "")
+            }, ensure_ascii=False, indent=2) if prev_synthesis else "None"
 
             doctor_reviews_str = "\n".join([
                 f"Doctor {i+1}:\n" +
@@ -472,7 +479,6 @@ class MetaAgent(BaseAgent):
                     pred = float(result["prediction"])
                     result["prediction"] = max(0.0, min(1.0, pred))
                 except Exception:
-                    print(response_text)
                     result["prediction"] = 0.501
             else:
                 result["prediction"] = 0.501
@@ -740,7 +746,6 @@ class EvaluateAgent(BaseAgent):
 
             if self.logger:
                 self.logger.info("Report evaluation agent response successfully parsed.")
-            return result
         except json.JSONDecodeError:
             if self.logger:
                 self.logger.warning("Report evaluation agent response is not valid JSON, attempting fallback parsing.")
@@ -749,16 +754,19 @@ class EvaluateAgent(BaseAgent):
             result = parse_structured_output_for_final_report(response_text)
             if self.logger:
                 self.logger.info("Report evaluation agent fallback parsing completed.")
-            return result
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Error processing evaluation response: {e}")
-            return {
+            result = {
                 "factuality": {"score": 1, "reason": f"Parsing error: {e}"},
                 "safety": {"score": 1, "reason": f"Parsing error: {e}"},
                 "explainability": {"score": 1, "reason": f"Parsing error: {e}"},
                 "overall_comment": f"Failed to parse evaluation: {response_text[:100]}..."
             }
+        result["system_message"] = system_message["content"]
+        result["user_message"] = user_message["content"]
+        result["response_text"] = response_text
+        return result
 
 
 class MDTConsultation:
@@ -954,7 +962,7 @@ class MDTConsultation:
                     first_analysis = mem["content"]
                     break
             if first_analysis is not None:
-                score_result = self.evaluator_agent.evaluate(first_analysis, final_decision, question, task_type)
+                score_result = self.evaluator_agent.evaluate_preliminary_report(first_analysis, final_decision, question, task_type)
             else:
                 score_result = {"score": 0.0, "reason": "No preliminary report found"}
             doctor_scores.append({
@@ -967,7 +975,7 @@ class MDTConsultation:
         # Step 5: Evaluate the final patient report
         if self.logger:
             self.logger.info("Starting final report trustworthiness evaluation.")
-        final_report_evaluation = self.evaluator_agent.evaluate_report(
+        final_report_evaluation = self.evaluator_agent.evaluate_final_report(
             original_question=question,
             final_report_explanation=final_decision.get('explanation', ''),
             final_report_prediction=final_decision.get('prediction', 0.501),
@@ -1054,26 +1062,26 @@ def parse_structured_output_for_final_report(response_text: str) -> Dict[str, An
 
     for line in lines:
         line = line.strip()
-        if "Factuality:" in line:
+        if "factuality:" in line.lower():
             current_dim = "factuality"
-        elif "Safety:" in line:
+        elif "safety:" in line.lower():
             current_dim = "safety"
-        elif "Explainability:" in line:
+        elif "explainability:" in line.lower():
             current_dim = "explainability"
-        elif "Overall Comment:" in line or "Overall comments:" in line:
+        elif "overall_comment:" in line.lower():
             result["overall_comment"] = line.split(":", 1)[1].strip() if ":" in line else line
             current_dim = None # Reset
 
         if current_dim:
-            if "Score:" in line:
+            if "score:" in line.lower():
                 try:
-                    score_str = line.split("Score:", 1)[1].strip().split(" ")[0] # Get first number
+                    score_str = line.split("score:", 1)[1].strip().split(" ")[0] # Get first number
                     score = int(float(score_str)) # Handle floats like 4.0
                     result[current_dim]["score"] = max(1, min(5, score))
                 except ValueError:
                     pass
-            if "Reason:" in line:
-                reason = line.split("Reason:", 1)[1].strip()
+            if "reason:" in line.lower():
+                reason = line.split("reason:", 1)[1].strip()
                 result[current_dim]["reason"] = reason
 
     return result
