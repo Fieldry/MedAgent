@@ -137,7 +137,7 @@ def format_input_ehr(
     return detail.strip() + '\n'
 
 
-def load_dataset(root_path: str, dataset: str, task: str) -> Tuple[List, List, List, List, List, List, Any]:
+def load_dataset(root_path: str, dataset: str, task: str) -> Tuple[List, List, List, List, List, List, List, Any]:
     """
     Load dataset based on configuration.
 
@@ -158,8 +158,10 @@ def load_dataset(root_path: str, dataset: str, task: str) -> Tuple[List, List, L
     labtest_features = pd.read_pickle(os.path.join(dataset_path, 'labtest_features.pkl'))
     if dataset == 'mimic-iv':
         ehr_labtest_features = pd.read_pickle(os.path.join(dataset_path, 'ehr_labtest_features.pkl'))
+        x_note = [item['x_note'] for item in data]
     else:
         ehr_labtest_features = labtest_features
+        x_note = None
     if task == 'los':
         try:
             los_info = pd.read_pickle(os.path.join(dataset_path, 'los_info.pkl'))
@@ -171,7 +173,7 @@ def load_dataset(root_path: str, dataset: str, task: str) -> Tuple[List, List, L
     survival_stats = pd.read_pickle(os.path.join(dataset_path, 'survival.pkl'))
     dead_stats = pd.read_pickle(os.path.join(dataset_path, 'dead.pkl'))
 
-    return ids, xs, x_llm_ts, ys, missing_masks, record_times, labtest_features, ehr_labtest_features, los_info, basic_info, survival_stats, dead_stats
+    return ids, xs, x_llm_ts, x_note, ys, missing_masks, record_times, labtest_features, ehr_labtest_features, los_info, basic_info, survival_stats, dead_stats
 
 
 def load_training_results(root_path: str, dataset: str, task: str, model: str) -> Tuple[List, List]:
@@ -263,12 +265,15 @@ def main():
                        help="Prediction task: mortality or readmission")
     parser.add_argument("--models", "-m", nargs='+', default=["AdaCare", "ConCare", "RETAIN"],
                        help="DL models to use for generating query")
+    parser.add_argument("--modality", "-mo", type=str, default="ehr", choices=["ehr", "note", "mm"],
+                       help="Modality of the dataset: ehr or note or mm")
     args = parser.parse_args()
 
     dataset = args.dataset
     task = args.task
     models = args.models
-    print(f"Dataset: {dataset}, Task: {task}, Models: {models}")
+    modality = args.modality
+    print(f"Dataset: {dataset}, Task: {task}, Models: {models}, Modality: {modality}")
 
     if dataset == 'tjh':
         demo_dim = 2
@@ -285,7 +290,7 @@ def main():
     dataset_root = "my_datasets/ehr"
     results_root = "logs"
 
-    ids, xs, x_llm_ts, labels, missing_masks, record_times, labtest_features, ehr_labtest_features, _, basic_info, survival_stats, dead_stats = load_dataset(dataset_root, dataset, task)
+    ids, xs, x_llm_ts, x_note, labels, missing_masks, record_times, labtest_features, ehr_labtest_features, _, basic_info, survival_stats, dead_stats = load_dataset(dataset_root, dataset, task)
     preds = {}
     attns = {}
     for model in models:
@@ -306,14 +311,22 @@ def main():
             important_features_item.append(process_important_features(xs[i][-1], attns[model][i], ehr_labtest_features, demo_dim))
         basic_context, last_visit_context = generate_prompt(dataset, models, basic_data, preds_item, important_features_item, survival_stats, dead_stats)
 
-        query = basic_context + ehr_context + last_visit_context
+        ehr_context = basic_context + ehr_context + last_visit_context
+        note_context = f"Here is the patient's clinical note data.\n{x_note[i]}\n"
+
+        if modality == "ehr":
+            query = ehr_context
+        elif modality == "note":
+            query = note_context
+        elif modality == "mm":
+            query = ehr_context + note_context
         query_list.append({
             'qid': id,
             'question': query,
             'ground_truth': labels[i][-1]
         })
 
-    with open(os.path.join(dataset_root, f"{dataset}/processed/ehr_{task}_test.json"), "w") as f:
+    with open(os.path.join(dataset_root, f"{dataset}/processed/{modality}_{task}_test.json"), "w") as f:
         json.dump(query_list, f, indent=4)
 
 
