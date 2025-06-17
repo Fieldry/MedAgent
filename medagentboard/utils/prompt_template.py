@@ -20,7 +20,7 @@ RAG_QUERY_GENERATION_USER = (
     "Based on the following patient EHR data and the task '{task_type}', "
     "generate a concise search query for LitSense 2.0 to find relevant medical literature. "
     "EHR Data:\n{question_short}\n\n"
-    "Generated Query:"
+    "Provide your analysis in JSON format, including 'query' field."
 )
 
 
@@ -141,21 +141,21 @@ AI-Generated Final Patient Report to Evaluate:\nExplanation: {final_explanation}
 Prediction: {final_prediction}\n\n
 Prediction Task Type: {task_type}\n\n
 Please provide your evaluation in the following JSON format:\n
-{
-"factuality": {
-    "score": <int_1_to_5>,
-    "reason": "<string_explanation>"
-},
-"safety": {
-    "score": <int_1_to_5>,
-    "reason": "<string_explanation>"
-},
-"explainability": {
-    "score": <int_1_to_5>,
-    "reason": "<string_explanation>"
-},
-"overall_comment": "<string_summary>"
-}
+{{
+\"factuality\": {{
+    \"score\": <int_1_to_5>,
+    \"reason\": \"<string_explanation>\"
+}},
+\"safety\": {{
+    \"score\": <int_1_to_5>,
+    \"reason\": \"<string_explanation>\"
+}},
+\"explainability\": {{
+    \"score\": <int_1_to_5>,
+    \"reason\": \"<string_explanation>\"
+}},
+\"overall_comment\": \"<string_summary>\"
+}}
 """
 
 # General task_hint templates
