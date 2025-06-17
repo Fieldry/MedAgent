@@ -172,7 +172,7 @@ def preprocess_response_string(response_text: str) -> str:
     response_text = re.sub(r',\s*}', '}', response_text)
     response_text = re.sub(r',\s*]', ']', response_text)
     # Match string in {} using regex
-    match = re.search(r'\{.*?\}', response_text)
+    match = re.search(r'\{.*?\}$', response_text)
     if match:
         response_text = match.group(0).strip()
     return response_text
