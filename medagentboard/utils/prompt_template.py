@@ -35,7 +35,7 @@ DOCTOR_ANALYZE_SYSTEM = (
     "{task_hint}"
 )
 DOCTOR_ANALYZE_USER = (
-    "Retrieved Literature (from LitSense 2.0):\n{retrieved_literature}\n\n"
+    "Retrieved Literature (from PubMed):\n{retrieved_literature}\n\n"
     "Patient EHR data:\n{question}\n\n"
     "Provide your analysis in JSON format, including 'explanation' and 'prediction' fields."
 )
@@ -63,15 +63,13 @@ META_SYNTHESIZE_SYSTEM = (
     "You are a medical consensus coordinator facilitating a multidisciplinary team consultation. "
     "Synthesize the opinions of multiple specialist doctors into a coherent analysis and conclusion. "
     "Consider each doctor's expertise and perspective, and weigh their opinions accordingly. "
-    "Your output should be in JSON format, including 'explanation' (synthesized reasoning) and "
-    "'prediction' (consensus probability value between 0 and 1) fields."
+    "Your output should be in JSON format, including 'report' (the report of the consensus), 'explanation' (synthesized reasoning) and 'prediction' (consensus probability value between 0 and 1) fields."
     "{task_hint}"
 )
 META_SYNTHESIZE_USER = (
     "EHR data and task: {question_short}...\n\n"
     "Doctors' Opinions:\n{opinions_text}\n\n"
-    "Please synthesize these opinions into a consensus view. Provide your synthesis in JSON format, including "
-    "'explanation' (comprehensive reasoning) and 'prediction' (probability value between 0 and 1) fields."
+    "Please synthesize these opinions into a consensus view. Provide your synthesis in JSON format, including 'report' (the report of the consensus), 'explanation' (comprehensive reasoning) and 'prediction' (consensus probability value between 0 and 1) fields."
 )
 
 META_DECISION_SYSTEM = (
@@ -95,14 +93,14 @@ META_RESYNTHESIZE_SYSTEM = (
     "You are a medical consensus coordinator facilitating a multi-round multidisciplinary team consultation. "
     "This is round {current_round}. In this round, you should refer to the previous round's consensus report and the current round's doctor reviews. "
     "Update and improve the consensus report based on the new reviews and previous synthesis. "
-    "Your output should be in JSON format, including 'explanation' (synthesized reasoning) and 'prediction' (consensus probability value between 0 and 1) fields."
+    "Your output should be in JSON format, including 'report' (the report of the consensus), 'explanation' (synthesized reasoning) and 'prediction' (consensus probability value between 0 and 1) fields."
     "{task_hint}"
 )
 META_RESYNTHESIZE_USER = (
     "EHR data and task: {question_short}...\n\n"
     "Previous round consensus report:\n{prev_synthesis}\n\n"
     "Current round doctor reviews:\n{doctor_reviews}\n\n"
-    "Please update the consensus report for this round. Output in JSON format, including 'explanation' and 'prediction'."
+    "Please update the consensus report for this round. Output in JSON format, including 'report' (the report of the consensus), 'explanation' (synthesized reasoning) and 'prediction' (consensus probability value between 0 and 1)."
 )
 
 # EvaluateAgent
