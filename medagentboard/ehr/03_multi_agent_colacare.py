@@ -21,6 +21,7 @@ from medagentboard.utils import prompt_template
 from medagentboard.utils.llm_configs import LLM_MODELS_SETTINGS
 from medagentboard.utils.json_utils import load_json, save_json, preprocess_response_string
 from medagentboard.utils.litsense_utils import litsense_api_call
+from medagentboard.utils.pubmed_utils import get_pubmed_results
 
 
 class AgentType(Enum):
@@ -191,10 +192,9 @@ class DoctorAgent(BaseAgent):
         rag_query = self._generate_rag_query(question, task_type)
 
         # Step 2: Call the simulated RAG tool with the generated query
-        retrieved_literature = litsense_api_call(rag_query)
+        retrieved_literature = get_pubmed_results(rag_query)
         if self.logger:
             self.logger.info(f"Doctor {self.agent_id} retrieved literature (first 200 chars): {retrieved_literature[:200]}...")
-
 
         system_message = {
             "role": "system",
@@ -288,7 +288,8 @@ class DoctorAgent(BaseAgent):
         if own_analysis:
             own_analysis_text = f"Your previous analysis:\nExplanation: {own_analysis.get('explanation', '')}\nPrediction: {own_analysis.get('prediction', '')}\n\n"
 
-        synthesis_text = f"Synthesized explanation: {synthesis.get('explanation', '')}\n"
+        synthesis_text = f"Synthesized report:\n{synthesis.get('report', '')}\n"
+        synthesis_text += f"Synthesized explanation: {synthesis.get('explanation', '')}\n"
         synthesis_text += f"Suggested prediction: {synthesis.get('prediction', '')}"
 
         system_message = {
@@ -426,7 +427,7 @@ class MetaAgent(BaseAgent):
 
         if current_round == 0:
             opinions_text = "\n".join([
-                f"Doctor {i+1}:\nExplanation: {opinion.get('explanation', '')}\nPrediction: {opinion.get('prediction', '')}" for i, opinion in enumerate(doctor_opinions)
+                f"Doctor {i+1}:\nExplanation: {opinion.get('opinion', {}).get('explanation', '')}\nPrediction: {opinion.get('opinion', {}).get('prediction', '')}" for i, opinion in enumerate(doctor_opinions)
             ])
             system_message = {
                 "role": "system",
@@ -443,10 +444,7 @@ class MetaAgent(BaseAgent):
                 if mem["type"] == "synthesis" and mem["round"] < current_round:
                     prev_synthesis = mem["content"]
                     break
-            prev_synthesis_str = json.dumps({
-                "explanation": prev_synthesis.get("explanation", ""),
-                "prediction": prev_synthesis.get("prediction", "")
-            }, ensure_ascii=False, indent=2) if prev_synthesis else "None"
+            prev_synthesis_str = f"Previous round consensus report:\n{prev_synthesis.get('report', '')}\n\nExplanation: {prev_synthesis.get('explanation', '')}\nPrediction: {prev_synthesis.get('prediction', '')}" if prev_synthesis else "No previous syntheses available.\n\n"
 
             doctor_reviews_str = "\n".join([
                 f"Doctor {i+1}:\n" +
@@ -1149,6 +1147,8 @@ def main():
                        help="Specify dataset name: mimic-iv or tjh or esrd")
     parser.add_argument("--task", "-t", type=str, required=True, choices=["mortality", "readmission"],
                        help="Prediction task: mortality or readmission")
+    parser.add_argument("--modality", "-mo", type=str, default="ehr", choices=["ehr", "note", "mm"],
+                       help="Modality of the dataset: ehr or note or mm")
     parser.add_argument("--meta_model", type=str, default="deepseek-v3-official",
                        help="Model used for meta agent")
     parser.add_argument("--doctor_models", nargs='+', default=["deepseek-v3-official", "deepseek-v3-official", "deepseek-v3-official"],
@@ -1162,7 +1162,8 @@ def main():
     # Dataset and task
     dataset_name = args.dataset
     task_type = args.task
-    print(f"Dataset: {dataset_name}, Task: {task_type}")
+    modality = args.modality
+    print(f"Dataset: {dataset_name}, Task: {task_type}, Modality: {modality}")
 
     # Validate the dataset and task combination
     if dataset_name in ["tjh", "esrd"] and task_type == "readmission":
@@ -1181,7 +1182,7 @@ def main():
     print(f"Doctors' specialty for this dataset ({dataset_name}): {dataset_specialty}")
 
     # Create logs directory structure
-    save_dir = os.path.join("logs", dataset_name, task_type, method)
+    save_dir = os.path.join("logs", dataset_name, task_type, method, modality)
     logs_dir = os.path.join(save_dir, "logs")
     results_dir = os.path.join(save_dir, "results")
     error_dir = os.path.join(save_dir, "error")
@@ -1190,7 +1191,7 @@ def main():
     os.makedirs(error_dir, exist_ok=True)
 
     # Set up data path
-    data_path = f"./my_datasets/ehr/{dataset_name}/processed/ehr_{task_type}_test.json"
+    data_path = f"./my_datasets/ehr/{dataset_name}/processed/{modality}_{task_type}_test.json"
 
     # Load the data
     data = load_json(data_path)
@@ -1213,16 +1214,16 @@ def main():
     print(f"Configuring {len(doctor_configs)} doctors with models: {[cfg['model_key'] for cfg in doctor_configs]} and specialty: {dataset_specialty}")
 
     # Process each item
-    for item in tqdm(data[:20], desc=f"Running MDT consultation on {dataset_name} {task_type}"):
+    for item in tqdm(data[:1], desc=f"Running MDT consultation on {dataset_name} {task_type}"):
         qid = item["qid"]
 
         # Format the qid for the output file
         qid_str = str(qid)
 
         # Skip if already processed
-        if os.path.exists(os.path.join(results_dir, f"ehr_{qid_str}-result.json")):
-            print(f"Skipping {qid_str} - already processed")
-            continue
+        # if os.path.exists(os.path.join(results_dir, f"ehr_{qid_str}-result.json")):
+        #     print(f"Skipping {qid_str} - already processed")
+        #     continue
 
         # Configure logger
         log_path = os.path.join(logs_dir, f"ehr_{qid_str}.log")
