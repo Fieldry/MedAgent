@@ -226,6 +226,7 @@ class DoctorAgent(BaseAgent):
 
             result["system_message"] = system_message["content"]
             result["user_message"] = user_message["content"]
+            result["retrieved_literature"] = retrieved_literature
 
             # Add to memory
             self.memory.append({
@@ -298,7 +299,7 @@ class DoctorAgent(BaseAgent):
         }
         user_message = {
             "role": "user",
-            "content": f"{prompt_template.DOCTOR_REVIEW_USER.format(question_short=question[:500], own_analysis_text=own_analysis_text, synthesis_text=synthesis_text)}"
+            "content": f"{prompt_template.DOCTOR_REVIEW_USER.format(question_short=question, own_analysis_text=own_analysis_text, synthesis_text=synthesis_text)}"
         }
 
         # Call LLM with retry mechanism
@@ -435,7 +436,7 @@ class MetaAgent(BaseAgent):
             }
             user_message = {
                 "role": "user",
-                "content": f"{prompt_template.META_SYNTHESIZE_USER.format(question_short=question[:500], opinions_text=opinions_text)}"
+                "content": f"{prompt_template.META_SYNTHESIZE_USER.format(question_short=question, opinions_text=opinions_text)}"
             }
         else:
             # 多轮共识
@@ -444,7 +445,7 @@ class MetaAgent(BaseAgent):
                 if mem["type"] == "synthesis" and mem["round"] < current_round:
                     prev_synthesis = mem["content"]
                     break
-            prev_synthesis_str = f"Previous round consensus report:\n{prev_synthesis.get('report', '')}\n\nExplanation: {prev_synthesis.get('explanation', '')}\nPrediction: {prev_synthesis.get('prediction', '')}" if prev_synthesis else "No previous syntheses available.\n\n"
+            prev_synthesis_str = f"{prev_synthesis.get('report', '')}\n\nExplanation: {prev_synthesis.get('explanation', '')}\nPrediction: {prev_synthesis.get('prediction', '')}" if prev_synthesis else "No previous syntheses available.\n\n"
 
             doctor_reviews_str = "\n".join([
                 f"Doctor {i+1}:\n" +
@@ -459,7 +460,7 @@ class MetaAgent(BaseAgent):
             }
             user_message = {
                 "role": "user",
-                "content": f"{prompt_template.META_RESYNTHESIZE_USER.format(question_short=question[:500], prev_synthesis=prev_synthesis_str, doctor_reviews=doctor_reviews_str)}"
+                "content": f"{prompt_template.META_RESYNTHESIZE_USER.format(question_short=question, prev_synthesis=prev_synthesis_str, doctor_reviews=doctor_reviews_str)}"
             }
 
         # Call LLM with retry mechanism
@@ -570,7 +571,7 @@ class MetaAgent(BaseAgent):
         }
         user_message = {
             "role": "user",
-            "content": f"{prompt_template.META_DECISION_USER.format(question_short=question[:500], current_synthesis_text=current_synthesis_text, reviews_text=reviews_text, previous_syntheses_text=previous_syntheses_text, decision_type=decision_type)}"
+            "content": f"{prompt_template.META_DECISION_USER.format(question_short=question, current_synthesis_text=current_synthesis_text, reviews_text=reviews_text, previous_syntheses_text=previous_syntheses_text, decision_type=decision_type)}"
         }
 
         # Call LLM with retry mechanism
@@ -640,7 +641,7 @@ class EvaluateAgent(BaseAgent):
         }
         user_message = {
             "role": "user",
-            "content": f"{prompt_template.EVALUATE_USER.format(question_short=question[:500], doctor_explanation=doctor_report.get('explanation', ''), doctor_prediction=doctor_report.get('prediction', ''), final_explanation=final_report.get('explanation', ''), final_prediction=final_report.get('prediction', ''), task_type=task_type)}"
+            "content": f"{prompt_template.EVALUATE_USER.format(question_short=question, doctor_explanation=doctor_report.get('explanation', ''), doctor_prediction=doctor_report.get('prediction', ''), final_explanation=final_report.get('explanation', ''), final_prediction=final_report.get('prediction', ''), task_type=task_type)}"
         }
         # Call LLM with retry mechanism
         response_text = self.call_llm(system_message, user_message)
