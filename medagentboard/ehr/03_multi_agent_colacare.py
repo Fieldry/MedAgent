@@ -845,8 +845,6 @@ class MDTConsultation:
         Returns:
             Dictionary containing final consultation result
         """
-        start_time = time.time()
-
         if self.logger:
             self.logger.info(f"Starting MDT consultation for case {qid}")
             self.logger.info(f"Task type: {task_type}")
@@ -992,14 +990,10 @@ class MDTConsultation:
             label=label
         )
 
-        # Calculate processing time
-        processing_time = time.time() - start_time
-
         # Add final decision and scores to history
         case_history["final_decision"] = final_decision
         case_history["consensus_reached"] = consensus_reached
         case_history["total_rounds"] = current_round
-        case_history["processing_time"] = processing_time
         case_history["doctor_scores"] = doctor_scores
         case_history["report_trustworthiness_evaluation"] = final_report_evaluation
 
@@ -1249,25 +1243,47 @@ def main():
         logger = get_logger(log_path)
 
         try:
-            # Process the item
-            result = process_input(
-                item,
-                task_type=task_type,
+            start_time = time.time()
+
+            # Initialize consultation
+            mdt = MDTConsultation(
+                max_rounds=2,
                 doctor_configs=doctor_configs,
                 meta_model_key=args.meta_model,
                 evaluator_model_key=args.evaluate_model,
-                logger=logger
+                logger=logger,
             )
+
+            # Run consultation
+            result = mdt.run_consultation(
+                qid=qid,
+                question=question,
+                task_type=task_type,
+                label=label
+            )
+
+            # Calculate processing time
+            processing_time = time.time() - start_time
+
+            # Process the item
+            # result = process_input(
+            #     item,
+            #     task_type=task_type,
+            #     doctor_configs=doctor_configs,
+            #     meta_model_key=args.meta_model,
+            #     evaluator_model_key=args.evaluate_model,
+            #     logger=logger
+            # )
 
             # Add output to the original item and save
             item_result = {
                 "qid": qid,
-                "question": item["question"],
-                "ground_truth": item.get("ground_truth"),
+                "question": question,
+                "ground_truth": label,
                 "predicted_value": result["final_decision"]["prediction"],
                 "case_history": result,
-                "timestamp": int(time.time()),
-                "processing_time": result["processing_time"]
+                "processing_time": processing_time,
+                "timestamp": int(time.time())
             }
 
             # Save individual result
