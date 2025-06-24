@@ -693,17 +693,21 @@ class EvaluateAgent(BaseAgent):
 
     def evaluate_final_report(self,
         original_question: str,
+        final_report_str: str,
         final_report_explanation: str,
         final_report_prediction: float,
-        task_type: str) -> Dict[str, Any]:
+        task_type: str,
+        label: str) -> Dict[str, Any]:
         """
         Evaluate the AI-generated final patient report for trustworthiness dimensions.
 
         Args:
             original_question: The complete original input (EHR data + initial model predictions).
+            final_report_str: The final generated report.
             final_report_explanation: The 'explanation' part of the final generated report.
             final_report_prediction: The 'prediction' part of the final generated report.
             task_type: Type of task (mortality or readmission).
+            label: True label of the patient under the task.
 
         Returns:
             Dictionary containing evaluation scores and reasons for Factuality, Safety,
@@ -720,9 +724,11 @@ class EvaluateAgent(BaseAgent):
             "role": "user",
             "content": prompt_template.REPORT_EVALUATOR_USER.format(
                 original_question=original_question,
+                final_report=final_report_str,
                 final_explanation=final_report_explanation,
                 final_prediction=final_report_prediction,
-                task_type=task_type
+                task_type=task_type,
+                true_label=label
             )
         }
 
@@ -733,7 +739,7 @@ class EvaluateAgent(BaseAgent):
             result = json.loads(preprocess_response_string(response_text))
 
             # Validate and normalize scores (ensure between 1 and 5)
-            for dim in ["factuality", "safety", "explainability"]:
+            for dim in ["factuality_prediction_accuracy", "explainability_evidence_grounding", "safety_calibration", "fairness_bias"]:
                 if dim in result and "score" in result[dim]:
                     try:
                         score = int(result[dim]["score"])
@@ -757,10 +763,10 @@ class EvaluateAgent(BaseAgent):
             if self.logger:
                 self.logger.error(f"Error processing evaluation response: {e}")
             result = {
-                "factuality": {"score": 1, "reason": f"Parsing error: {e}"},
-                "safety": {"score": 1, "reason": f"Parsing error: {e}"},
-                "explainability": {"score": 1, "reason": f"Parsing error: {e}"},
-                "overall_comment": f"Failed to parse evaluation: {response_text[:100]}..."
+                "factuality_prediction_accuracy": {"score": 1, "reason": f"Parsing error: {e}"},
+                "explainability_evidence_grounding": {"score": 1, "reason": f"Parsing error: {e}"},
+                "safety_calibration": {"score": 1, "reason": f"Parsing error: {e}"},
+                "fairness_bias": {"score": 1, "reason": f"Parsing error: {e}"}
             }
         result["system_message"] = system_message["content"]
         result["user_message"] = user_message["content"]
@@ -825,7 +831,8 @@ class MDTConsultation:
     def run_consultation(self,
         qid: str,
         question: str,
-        task_type: str = "mortality") -> Dict[str, Any]:
+        task_type: str = "mortality",
+        label: str = None) -> Dict[str, Any]:
         """
         Run the MDT consultation process.
 
@@ -833,6 +840,7 @@ class MDTConsultation:
             qid: Question ID
             question: Question containing EHR data
             task_type: Type of task (mortality or readmission)
+            label: True label of the patient under the task
 
         Returns:
             Dictionary containing final consultation result
@@ -842,6 +850,7 @@ class MDTConsultation:
         if self.logger:
             self.logger.info(f"Starting MDT consultation for case {qid}")
             self.logger.info(f"Task type: {task_type}")
+            self.logger.info(f"True label: {label}")
 
         # Case consultation history
         case_history = {
@@ -976,9 +985,11 @@ class MDTConsultation:
             self.logger.info("Starting final report trustworthiness evaluation.")
         final_report_evaluation = self.evaluator_agent.evaluate_final_report(
             original_question=question,
+            final_report_str=final_decision.get('report', ''),
             final_report_explanation=final_decision.get('explanation', ''),
             final_report_prediction=final_decision.get('prediction', 0.501),
-            task_type=task_type
+            task_type=task_type,
+            label=label
         )
 
         # Calculate processing time
@@ -1116,6 +1127,7 @@ def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek
     # Required fields
     qid = item.get("qid")
     question = item.get("question")
+    label = item.get("ground_truth")
 
     start_time = time.time()
 
@@ -1133,6 +1145,7 @@ def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek
         qid=qid,
         question=question,
         task_type=task_type,
+        label=label
     )
 
     # Calculate processing time
@@ -1217,9 +1230,14 @@ def main():
     # Process each item
     for item in tqdm(data[:1], desc=f"Running MDT consultation on {dataset_name} {task_type}"):
         qid = item["qid"]
+        question = item["question"]
+        label = item.get("ground_truth")
 
         # Format the qid for the output file
         qid_str = str(qid)
+
+        # Truncate the question for note modality
+        question = question[:500] if modality == "note" else question
 
         # Skip if already processed
         # if os.path.exists(os.path.join(results_dir, f"ehr_{qid_str}-result.json")):
