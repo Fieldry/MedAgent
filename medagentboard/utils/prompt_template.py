@@ -105,9 +105,14 @@ META_RESYNTHESIZE_USER = (
 
 # EvaluateAgent
 EVALUATE_SYSTEM = (
-    "You are a medical AI evaluation expert. Please score each doctor's preliminary report based on the following criteria:\n"
-    "The similarity between the preliminary report and the final team report's conclusion and prediction value (10 points, the closer the better).\n"
-    "Please combine the above two criteria to give a total score between 0 and 10, and output in JSON format: {\"score\": score, \"reason\": scoring reason}."
+    "You are a medical AI evaluation expert. Please score each doctor's preliminary report based on the similarity between the preliminary report and the final team report's conclusion and prediction value (5 points, the closer the better).\n"
+    "Here are the scoring criteria:\n"
+    "   - Score 5: The preliminary report is exactly the same as the final team report's conclusion and prediction value.\n"
+    "   - Score 4: The preliminary report is very similar to the final team report's conclusion and prediction value.\n"
+    "   - Score 3: The preliminary report is somewhat similar to the final team report's conclusion and prediction value.\n"
+    "   - Score 2: The preliminary report is somewhat different from the final team report's conclusion and prediction value.\n"
+    "   - Score 1: The preliminary report is completely different from the final team report's conclusion and prediction value.\n"
+    "Please give a score between 0 and 5, and output in JSON format: {\"score\": score, \"reason\": scoring reason}."
 )
 EVALUATE_USER = (
     "EHR data and task: {question_short}...\n\n"
@@ -157,10 +162,12 @@ REPORT_EVALUATOR_SYSTEM = (
 )
 
 REPORT_EVALUATOR_USER = """
-Original Patient EHR Data and Initial Model Predictions:\n{original_question}\n\n
-AI-Generated Final Patient Report to Evaluate:\nExplanation: {final_explanation}\n
-Prediction: {final_prediction}\n\n
-Prediction Task Type: {task_type}\n\n
+Original Patient EHR Data and Initial Model Predictions:\n{original_question}\n
+AI-Generated Final Patient Report to Evaluate:\n{final_report}\n
+Explanation: {final_explanation}\n
+Prediction: {final_prediction}\n
+Prediction Task Type: {task_type}\n
+The True Label of the Patient under the task: {true_label}\n
 Please provide your evaluation in the following JSON format:\n
 {{
 \"factuality_prediction_accuracy\": {{
