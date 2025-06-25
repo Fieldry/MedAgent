@@ -133,7 +133,7 @@ class DoctorAgent(BaseAgent):
         if self.logger:
             self.logger.info(f"Initializing doctor agent, ID: {agent_id}, Specialty: {specialty}, Model: {model_key}")
 
-    def _generate_rag_query(self, question: str, task_type: str) -> str:
+    def _generate_rag_query(self, question: str, task_type: str) -> List[str]:
         """
         Generates a search query for the RAG tool based on the EHR data and task.
         """
@@ -157,7 +157,7 @@ class DoctorAgent(BaseAgent):
 
         try:
             result = json.loads(preprocess_response_string(response_text))
-            query_text = result.get("query", "")
+            query_text = result.get("query", [])
         except json.JSONDecodeError:
             query_text = response_text.strip().strip('"')
 
@@ -192,7 +192,10 @@ class DoctorAgent(BaseAgent):
         rag_query = self._generate_rag_query(question, task_type)
 
         # Step 2: Call the simulated RAG tool with the generated query
-        retrieved_literature = get_pubmed_results(rag_query)
+        retrieved_literature = "Retrieved literature:\n"
+        for i, query in enumerate(rag_query):
+            retrieved_literature += litsense_api_call(query=query, order=i, max_results=10) + "\n"
+
         if self.logger:
             self.logger.info(f"Doctor {self.agent_id} retrieved literature (first 200 chars): {retrieved_literature[:200]}...")
 
@@ -1222,7 +1225,7 @@ def main():
     print(f"Configuring {len(doctor_configs)} doctors with models: {[cfg['model_key'] for cfg in doctor_configs]} and specialty: {dataset_specialty}")
 
     # Process each item
-    for item in tqdm(data[:1], desc=f"Running MDT consultation on {dataset_name} {task_type}"):
+    for item in tqdm(data, desc=f"Running MDT consultation on {dataset_name} {task_type}"):
         qid = item["qid"]
         question = item["question"]
         label = item.get("ground_truth")
