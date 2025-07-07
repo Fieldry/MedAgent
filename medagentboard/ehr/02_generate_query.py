@@ -312,7 +312,7 @@ def main():
         basic_context, last_visit_context = generate_prompt(dataset, models, basic_data, preds_item, important_features_item, survival_stats, dead_stats)
 
         ehr_context = basic_context + ehr_context + last_visit_context
-        note_context = f"Here is the patient's clinical note data.\n{x_note[i]}\n"
+        note_context = f"Here is the patient's clinical note data.\n{x_note[i]}\n" if x_note is not None else ""
 
         if modality == "ehr":
             query = ehr_context
