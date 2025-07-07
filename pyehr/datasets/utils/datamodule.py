@@ -9,6 +9,7 @@ import torch.utils.data as data
 class EhrDataset(data.Dataset):
     def __init__(self, data_path, task, mode='train'):
         super().__init__()
+        mode = 'fusion' if mode == 'test' else mode
         self.dataset = pd.read_pickle(os.path.join(data_path, f'{mode}_data.pkl'))
         self.id = [item['id'] for item in self.dataset]
         self.data = [item['x_ts'] for item in self.dataset]
