@@ -9,8 +9,9 @@ and make predictions for mortality and readmission probability.
 import os
 import json
 import time
-import argparse
+import asyncio
 import logging
+import argparse
 from tqdm import tqdm
 from enum import Enum
 from typing import Dict, Any, List
@@ -159,13 +160,14 @@ class DoctorAgent(BaseAgent):
             result = json.loads(preprocess_response_string(response_text))
             query_text = result.get("query", [])
         except json.JSONDecodeError:
-            query_text = response_text.strip().strip('"')
+            # query_text = response_text.strip().strip('"')
+            query_text = []
 
         if self.logger:
-            self.logger.info(f"Doctor {self.agent_id} generated RAG query: '{query_text}'")
+            self.logger.info(f"Doctor {self.agent_id} generated RAG query: {query_text}")
         return query_text
 
-    def analyze_case(self,
+    async def analyze_case(self,
         question: str,
         task_type: str) -> Dict[str, Any]:
         """
@@ -194,7 +196,7 @@ class DoctorAgent(BaseAgent):
         # Step 2: Call the simulated RAG tool with the generated query
         retrieved_literature = "Retrieved literature:\n"
         for i, query in enumerate(rag_query):
-            retrieved_literature += litsense_api_call(query=query, order=i, max_results=10) + "\n"
+            retrieved_literature += await litsense_api_call(query=query, order=i, max_results=10) + "\n"
 
         if self.logger:
             self.logger.info(f"Doctor {self.agent_id} retrieved literature (first 200 chars): {retrieved_literature[:200]}...")
@@ -229,6 +231,7 @@ class DoctorAgent(BaseAgent):
 
             result["system_message"] = system_message["content"]
             result["user_message"] = user_message["content"]
+            result["rag_query"] = rag_query
             result["retrieved_literature"] = retrieved_literature
 
             # Add to memory
@@ -742,7 +745,7 @@ class EvaluateAgent(BaseAgent):
             result = json.loads(preprocess_response_string(response_text))
 
             # Validate and normalize scores (ensure between 1 and 5)
-            for dim in ["factuality_prediction_accuracy", "explainability_evidence_grounding", "safety_calibration", "fairness_bias"]:
+            for dim in ["accuracy", "explainability", "safety"]:
                 if dim in result and "score" in result[dim]:
                     try:
                         score = int(result[dim]["score"])
@@ -766,10 +769,9 @@ class EvaluateAgent(BaseAgent):
             if self.logger:
                 self.logger.error(f"Error processing evaluation response: {e}")
             result = {
-                "factuality_prediction_accuracy": {"score": 1, "reason": f"Parsing error: {e}"},
-                "explainability_evidence_grounding": {"score": 1, "reason": f"Parsing error: {e}"},
-                "safety_calibration": {"score": 1, "reason": f"Parsing error: {e}"},
-                "fairness_bias": {"score": 1, "reason": f"Parsing error: {e}"}
+                "accuracy": {"score": 1, "reason": f"Parsing error: {e}"},
+                "explainability": {"score": 1, "reason": f"Parsing error: {e}"},
+                "safety": {"score": 1, "reason": f"Parsing error: {e}"}
             }
         result["system_message"] = system_message["content"]
         result["user_message"] = user_message["content"]
@@ -831,7 +833,7 @@ class MDTConsultation:
         if self.logger:
             self.logger.info(f"Initialized MDT consultation, max_rounds={max_rounds}, doctors: [{doctor_info}], meta_model={meta_model_key}")
 
-    def run_consultation(self,
+    async def run_consultation(self,
         qid: str,
         question: str,
         task_type: str = "mortality",
@@ -869,7 +871,7 @@ class MDTConsultation:
         for i, doctor in enumerate(self.doctor_agents):
             if self.logger:
                 self.logger.info(f"Doctor {i+1} ({doctor.specialty}) analyzing case")
-            opinion = doctor.analyze_case(question, task_type)
+            opinion = await doctor.analyze_case(question, task_type)
             # Store original opinion with doctor details for meta agent to access
             doctor_opinions.append({
                 "doctor_id": doctor.agent_id,
@@ -1057,10 +1059,9 @@ def parse_structured_output_for_final_report(response_text: str) -> Dict[str, An
     This is a simplified example; a more robust parser might be needed based on actual LLM output.
     """
     result = {
-        "factuality": {"score": 1, "reason": "Could not parse reason."},
+        "accuracy": {"score": 1, "reason": "Could not parse reason."},
         "safety": {"score": 1, "reason": "Could not parse reason."},
         "explainability": {"score": 1, "reason": "Could not parse reason."},
-        "overall_comment": "Could not parse overall comment."
     }
 
     # Simple regex-like extraction (not perfect for complex cases)
@@ -1069,15 +1070,12 @@ def parse_structured_output_for_final_report(response_text: str) -> Dict[str, An
 
     for line in lines:
         line = line.strip()
-        if "factuality:" in line.lower():
-            current_dim = "factuality"
+        if "accuracy:" in line.lower():
+            current_dim = "accuracy"
         elif "safety:" in line.lower():
             current_dim = "safety"
         elif "explainability:" in line.lower():
             current_dim = "explainability"
-        elif "overall_comment:" in line.lower():
-            result["overall_comment"] = line.split(":", 1)[1].strip() if ":" in line else line
-            current_dim = None # Reset
 
         if current_dim:
             if "score:" in line.lower():
@@ -1107,7 +1105,7 @@ def get_logger(log_path):
     return logger
 
 
-def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek-v3-official", evaluator_model_key="deepseek-v3-official", logger=None):
+async def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek-v3-official", evaluator_model_key="deepseek-v3-official", logger=None):
     """
     Process input data.
 
@@ -1138,7 +1136,7 @@ def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek
     )
 
     # Run consultation
-    result = mdt.run_consultation(
+    result = await mdt.run_consultation(
         qid=qid,
         question=question,
         task_type=task_type,
@@ -1152,7 +1150,7 @@ def process_input(item, task_type, doctor_configs=None, meta_model_key="deepseek
     return result
 
 
-def main():
+async def main():
     parser = argparse.ArgumentParser(description="Run MDT consultation on EHR datasets")
     parser.add_argument("--dataset", "-d", type=str, required=True, choices=["mimic-iv", "tjh", "esrd"],
                        help="Specify dataset name: mimic-iv or tjh or esrd")
@@ -1224,9 +1222,13 @@ def main():
 
     print(f"Configuring {len(doctor_configs)} doctors with models: {[cfg['model_key'] for cfg in doctor_configs]} and specialty: {dataset_specialty}")
 
+    to_run_pids = [215, 265, 318, 740, 455, 370, 598, 616, 812, 998]
     # Process each item
     for item in tqdm(data, desc=f"Running MDT consultation on {dataset_name} {task_type}"):
         qid = item["qid"]
+        if qid not in to_run_pids:
+            continue
+
         question = item["question"]
         label = item.get("ground_truth")
 
@@ -1237,9 +1239,9 @@ def main():
         question = question[:500] if modality == "note" else question
 
         # Skip if already processed
-        # if os.path.exists(os.path.join(results_dir, f"ehr_{qid_str}-result.json")):
-        #     print(f"Skipping {qid_str} - already processed")
-        #     continue
+        if os.path.exists(os.path.join(results_dir, f"ehr_{qid_str}-result.json")):
+            print(f"Skipping {qid_str} - already processed")
+            continue
 
         # Configure logger
         log_path = os.path.join(logs_dir, f"ehr_{qid_str}.log")
@@ -1258,7 +1260,7 @@ def main():
             )
 
             # Run consultation
-            result = mdt.run_consultation(
+            result = await mdt.run_consultation(
                 qid=qid,
                 question=question,
                 task_type=task_type,
@@ -1267,16 +1269,6 @@ def main():
 
             # Calculate processing time
             processing_time = time.time() - start_time
-
-            # Process the item
-            # result = process_input(
-            #     item,
-            #     task_type=task_type,
-            #     doctor_configs=doctor_configs,
-            #     meta_model_key=args.meta_model,
-            #     evaluator_model_key=args.evaluate_model,
-            #     logger=logger
-            # )
 
             # Add output to the original item and save
             item_result = {
@@ -1304,4 +1296,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
