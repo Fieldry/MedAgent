@@ -16,11 +16,12 @@ class MyDataset(Dataset):
     def __init__(self, data_path, mode="train"):
         super().__init__()
         data = pd.read_pickle(os.path.join(data_path, f"{mode}_embeddings.pkl"))
-        self.ehr_scores = data["ehr_scores"]
-        self.ehr_embeddings = data["ehr_embeddings"]
         self.text_embeddings = data["text_embeddings"]
-        self.y = data["labels"]
-        self.pids = data["pids"]
+        length = len(self.text_embeddings)
+        self.ehr_scores = data["ehr_scores"][:length]
+        self.ehr_embeddings = data["ehr_embeddings"][:length]
+        self.y = data["labels"][:length]
+        self.pids = data["pids"][:length]
 
     def __len__(self):
         return len(self.y)
@@ -72,8 +73,8 @@ class FusionModel(nn.Module):
         )
 
     def forward(self, ehr, text):
-        ehr_embed = self.ehr_embed(ehr)
-        text_embed = self.text_embed(text)
+        ehr_embed = self.ehr_embed(ehr.to(torch.float32))
+        text_embed = self.text_embed(text.to(torch.float32))
         merge_embed = self.merge_embed(torch.cat([ehr_embed, text_embed], dim=-1))
         return merge_embed
 
@@ -84,6 +85,7 @@ class Pipeline(L.LightningModule):
         self.learning_rate = config["learning_rate"]
         self.main_metric = config["main_metric"]
         self.output_dim = config["output_dim"]
+        self.task = config["task"]
         self.model = FusionModel(ehr_embed_dim=config["ehr_embed_dim"], text_embed_dim=config["text_embed_dim"], merge_embed_dim=config["merge_embed_dim"], output_dim=self.output_dim)
         self.head = nn.Sequential(
             nn.Linear(config["merge_embed_dim"], self.output_dim),
@@ -101,6 +103,7 @@ class Pipeline(L.LightningModule):
     def forward(self, batch):
         merged_ehr_embedding, text_embedding, _, _ = batch
         y_hat = self.model(merged_ehr_embedding, text_embedding).to(merged_ehr_embedding.device)
+        y_hat = self.head(y_hat).squeeze(-1)
         return y_hat
 
     def _get_loss(self, batch):
@@ -134,7 +137,7 @@ class Pipeline(L.LightningModule):
             self.log(k, v)
 
         main_score = metrics[self.main_metric]
-        if check_metric_is_better(self.cur_best_performance, main_score, self.main_metric):
+        if check_metric_is_better(self.cur_best_performance, self.main_metric, main_score, self.task):
             self.cur_best_performance = metrics
             for k, v in metrics.items(): self.log("best_"+k, v)
         self.validation_step_outputs.clear()
@@ -204,7 +207,7 @@ def parse_args():
     parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name", choices=["tjh", "mimic-iv", "esrd"])
     parser.add_argument("--task", "-t", type=str, required=True, help="Task name", choices=["mortality", "readmission", "los"])
     parser.add_argument("--method", "-m", type=str, default="ColaCare", help="Method name", choices=["ColaCare"])
-    parser.add_argument("--ehr_model_names", "-e", type=str, nargs="+", required=True, help="EHR model names")
+    parser.add_argument("--ehr_model_names", "-em", type=str, nargs="+", required=True, help="EHR model names")
     parser.add_argument("--lm_name", "-lm", type=str, required=True, help="Language model name")
 
     # Model and training hyperparameters
@@ -219,6 +222,8 @@ def parse_args():
     parser.add_argument('--seed', '-s', type=int, default=42, help='Seed')
     parser.add_argument('--main_metric', '-mm', type=str, default='auroc', help='Main metric', choices=['auroc', 'auprc'])
 
+    return parser.parse_args()
+
 
 if __name__ == "__main__":
     # Parse command line arguments
@@ -228,6 +233,9 @@ if __name__ == "__main__":
     config = {
         'dataset': args.dataset,
         'task': args.task,
+        'method': args.method,
+        'ehr_model_names': args.ehr_model_names,
+        'lm_name': args.lm_name,
         'ehr_embed_dim': args.ehr_embed_dim,
         'text_embed_dim': args.text_embed_dim,
         'merge_embed_dim': args.merge_embed_dim,
