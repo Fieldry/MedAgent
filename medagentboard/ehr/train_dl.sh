@@ -2,23 +2,14 @@
 
 # Parameter options
 MODEL_OPTIONS=(
-    "GRU"
-    "LSTM"
-    "Transformer"
-    "RNN"
     "AdaCare"
-    "AICare"
-    "AnchCare"
     "ConCare"
+    "RETAIN"
 )
 DATASET_TASK_OPTIONS=(
-    "tjh:mortality"
-    "tjh:los"
+    "esrd:mortality"
     "mimic-iv:mortality"
     "mimic-iv:readmission"
-)
-SHOT_OPTIONS=(
-    "full"
 )
 
 # Compute total runs for progress display
@@ -36,7 +27,7 @@ for DATASET_TASK in "${DATASET_TASK_OPTIONS[@]}"; do
     CURRENT_RUN=$((CURRENT_RUN + 1))
 
     # Construct command
-    CMD="python -m train -d ${DATASET} -t ${TASK} -m ${MODEL_OPTIONS[@]} -s ${SHOT_OPTIONS[@]} && python -m importance -d ${DATASET} -t ${TASK} -m ${MODEL_OPTIONS[@]}"
+    CMD="python -m medagentboard.ehr.01_train_dl -d ${DATASET} -t ${TASK} -m ${MODEL_OPTIONS[@]}"
 
     # Print the counter and command
     echo "[$CURRENT_RUN/$TOTAL_RUNS] Running configuration..."
