@@ -38,8 +38,10 @@ def generate_prompt(
         age = basic_data["Age"]
         basic_context = f"This {gender} patient, aged {age}, is an patient in intensive care unit (ICU).\n"
 
-    last_visit_context = f"We have {len(models)} models {', '.join(models)} to predict the mortality risk and estimate the feature importance weight for the patient in the last visit:\n"
+    last_visit_all_context = f"We have {len(models)} models {', '.join(models)} to predict the mortality risk and estimate the feature importance weight for the patient in the last visit:\n"
+    last_visit_contexts = []
     for model, y, important_features_item in zip(models, ys, important_features):
+        last_visit_context = f"We have model {model} to predict the mortality risk and estimate the feature importance weight for the patient in the last visit:\n"
         last_visit = f"The mortality prediction risk for the patient from {model} model is {round(float(y), 2)} out of 1.0, which means the patient is at {get_death_desc(float(y))} of death risk. Our model especially pays great attention to the following features:\n"
         for item in important_features_item:
             key, value, attention = item
@@ -50,9 +52,12 @@ def generate_prompt(
             last_visit += f'{key_name}: with '
             last_visit += f'importance weight of {round(float(attention), 3)} out of 1.0. '
             last_visit += f'The feature value is {round(value, 2)}{key_unit}, which is {get_mean_desc(value, survival_mean)} than the average value of survival patients ({round(survival_mean, 2)}{key_unit}), {get_mean_desc(value, dead_mean)} than the average value of dead patients ({round(dead_mean, 2)}{key_unit}).\n'
-        last_visit_context += last_visit + '\n'
+        last_visit_context += last_visit
+        last_visit_contexts.append(last_visit_context)
+        last_visit_all_context += last_visit
 
-    return basic_context, last_visit_context
+    last_visit_contexts.append(last_visit_all_context)
+    return basic_context, last_visit_contexts
 
 
 def format_input_ehr(
@@ -185,8 +190,8 @@ def load_training_results(root_path: str, dataset: str, task: str, model: str) -
 
 
 def process_important_features(values: List[float], attns: List[float], features: List[str], demo_dim: int=2) -> List[Tuple[str, Dict]]:
-    assert len(values) == demo_dim + len(features), f"Values length: {len(values[0])}, demo_dim: {demo_dim}, features: {len(features)}"
-    assert len(attns) == len(features), f"Attns length: {len(attns[0])}, features: {len(features)}"
+    assert len(values) == demo_dim + len(features), f"Values length: {len(values)}, demo_dim: {demo_dim}, features: {len(features)}"
+    assert len(attns) == len(features), f"Attns length: {len(attns)}, features: {len(features)}"
 
     values = np.array(values)[demo_dim:].tolist()
 
@@ -309,17 +314,17 @@ def main():
         for model in models:
             preds_item.append(preds[model][i])
             important_features_item.append(process_important_features(x_llm_ts[i][-1], attns[model][i], ehr_labtest_features, demo_dim))
-        basic_context, last_visit_context = generate_prompt(dataset, models, basic_data, preds_item, important_features_item, survival_stats, dead_stats)
+        basic_context, last_visit_contexts = generate_prompt(dataset, models, basic_data, preds_item, important_features_item, survival_stats, dead_stats)
 
-        ehr_context = basic_context + ehr_context + last_visit_context
+        ehr_contexts = [basic_context + ehr_context + last_visit_context for last_visit_context in last_visit_contexts]
         note_context = f"Here is the patient's clinical note data.\n{x_note[i]}\n" if x_note is not None else ""
 
         if modality == "ehr":
-            query = ehr_context
+            query = ehr_contexts
         elif modality == "note":
             query = note_context
         elif modality == "mm":
-            query = ehr_context + note_context
+            query = [ehr_context + note_context for ehr_context in ehr_contexts]
         query_list.append({
             'qid': id,
             'question': query,

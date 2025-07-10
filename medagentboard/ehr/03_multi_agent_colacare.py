@@ -10,7 +10,9 @@ import os
 import json
 import time
 import asyncio
+import asyncio
 import logging
+import argparse
 import argparse
 from tqdm import tqdm
 from enum import Enum
@@ -22,7 +24,6 @@ from medagentboard.utils import prompt_template
 from medagentboard.utils.llm_configs import LLM_MODELS_SETTINGS
 from medagentboard.utils.json_utils import load_json, save_json, preprocess_response_string
 from medagentboard.utils.litsense_utils import litsense_api_call
-from medagentboard.utils.pubmed_utils import get_pubmed_results
 
 
 class AgentType(Enum):
@@ -835,7 +836,7 @@ class MDTConsultation:
 
     async def run_consultation(self,
         qid: str,
-        question: str,
+        question: List[str],
         task_type: str = "mortality",
         label: str = None) -> Dict[str, Any]:
         """
@@ -871,7 +872,7 @@ class MDTConsultation:
         for i, doctor in enumerate(self.doctor_agents):
             if self.logger:
                 self.logger.info(f"Doctor {i+1} ({doctor.specialty}) analyzing case")
-            opinion = await doctor.analyze_case(question, task_type)
+            opinion = await doctor.analyze_case(question[i], task_type)
             # Store original opinion with doctor details for meta agent to access
             doctor_opinions.append({
                 "doctor_id": doctor.agent_id,
@@ -890,7 +891,7 @@ class MDTConsultation:
         if self.logger:
             self.logger.info("Meta agent synthesizing opinions")
         synthesis = self.meta_agent.synthesize_opinions(
-            question, doctor_opinions=doctor_opinions, task_type=task_type, current_round=current_round
+            question[-1], doctor_opinions=doctor_opinions, task_type=task_type, current_round=current_round
         )
         case_history["synthesis"] = synthesis
         if self.logger:
@@ -909,7 +910,7 @@ class MDTConsultation:
             for i, doctor in enumerate(self.doctor_agents):
                 if self.logger:
                     self.logger.info(f"Doctor {i+1} ({doctor.specialty}) reviewing synthesis")
-                review = doctor.review_synthesis(question, synthesis, task_type, current_round)
+                review = doctor.review_synthesis(question[i], synthesis, task_type, current_round)
                 # Store original review with doctor details for meta agent to access
                 doctor_reviews.append({
                     "doctor_id": doctor.agent_id,
@@ -931,7 +932,7 @@ class MDTConsultation:
             if self.logger:
                 self.logger.info("Meta agent synthesizing opinions")
             synthesis = self.meta_agent.synthesize_opinions(
-                question, doctor_reviews=doctor_reviews, task_type=task_type, current_round=current_round
+                question[-1], doctor_reviews=doctor_reviews, task_type=task_type, current_round=current_round
             )
             round_data["synthesis"] = synthesis
 
@@ -973,7 +974,7 @@ class MDTConsultation:
                     first_analysis = mem["content"]
                     break
             if first_analysis is not None:
-                score_result = self.evaluator_agent.evaluate_preliminary_report(first_analysis, final_decision, question, task_type)
+                score_result = self.evaluator_agent.evaluate_preliminary_report(first_analysis, final_decision, question[i], task_type)
             else:
                 score_result = {"score": 0.0, "reason": "No preliminary report found"}
             doctor_scores.append({
@@ -987,7 +988,7 @@ class MDTConsultation:
         if self.logger:
             self.logger.info("Starting final report trustworthiness evaluation.")
         final_report_evaluation = self.evaluator_agent.evaluate_final_report(
-            original_question=question,
+            original_question=question[-1],
             final_report_str=final_decision.get('report', ''),
             final_report_explanation=final_decision.get('explanation', ''),
             final_report_prediction=final_decision.get('prediction', 0.501),

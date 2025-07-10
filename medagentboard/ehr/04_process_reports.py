@@ -46,17 +46,47 @@ def main():
         ehr_embeddings = np.array(ehr_embeddings).transpose(1, 0, 2) # (num_patients, num_models, embedding_dim)
         results["ehr_embeddings"] = ehr_embeddings.tolist()
 
+    train_pids = [item["id"] for item in pd.read_pickle(os.path.join("my_datasets", "ehr", args.dataset, "processed/split/fusion_train_data.pkl"))]
+    val_pids = [item["id"] for item in pd.read_pickle(os.path.join("my_datasets", "ehr", args.dataset, "processed/split/fusion_val_data.pkl"))]
+    test_pids = [item["id"] for item in pd.read_pickle(os.path.join("my_datasets", "ehr", args.dataset, "processed/split/test_data.pkl"))]
+
+    train_embeddings = {
+        "pids": train_pids,
+        "labels": [],
+        "ehr_embeddings": [],
+        "text_embeddings": [],
+        "ehr_scores": []
+    }
+    val_embeddings = {
+        "pids": val_pids,
+        "labels": [],
+        "ehr_embeddings": [],
+        "text_embeddings": [],
+        "ehr_scores": []
+    }
+    test_embeddings = {
+        "pids": test_pids,
+        "labels": [],
+        "ehr_embeddings": [],
+        "text_embeddings": [],
+        "ehr_scores": []
+    }
+
     # ColaCare reports embeddings
     method = "ColaCare"
     model = AutoModel.from_pretrained(args.language_model)
     tokenizer = AutoTokenizer.from_pretrained(args.language_model)
-    for pid in results["pids"]:
-        reports_path = os.path.join("logs", args.dataset, args.task, method, "results", f"ehr_{str(pid)}-result.json")
+    for i, pid in enumerate(results["pids"]):
+        reports_path = os.path.join("logs", args.dataset, args.task, method, "ehr/results", f"ehr_{str(pid)}-result.json")
         if not os.path.exists(reports_path):
             print(f"ColaCare reports not found for {pid}")
             continue
         reports = json.load(open(reports_path))
         final_report = reports["case_history"]["final_decision"]["explanation"]
+        if isinstance(final_report, dict):
+            final_report = " ".join(list(map(str, final_report.values())))
+        if isinstance(final_report, list):
+            final_report = " ".join(final_report)
 
         input_tokens = tokenizer(final_report,
             return_tensors="pt",
@@ -70,8 +100,27 @@ def main():
         results["text_embeddings"].append(text_embedding)
         results["ehr_scores"].append([item["score"] for item in reports["case_history"]["doctor_scores"]])
 
+        if pid in train_pids:
+            train_embeddings["labels"].append(results["labels"][i])
+            train_embeddings["text_embeddings"].append(text_embedding)
+            train_embeddings["ehr_scores"].append([item["score"] for item in reports["case_history"]["doctor_scores"]])
+            train_embeddings["ehr_embeddings"].append(ehr_embeddings[i])
+        elif pid in val_pids:
+            val_embeddings["labels"].append(results["labels"][i])
+            val_embeddings["text_embeddings"].append(text_embedding)
+            val_embeddings["ehr_scores"].append([item["score"] for item in reports["case_history"]["doctor_scores"]])
+            val_embeddings["ehr_embeddings"].append(ehr_embeddings[i])
+        elif pid in test_pids:
+            test_embeddings["labels"].append(results["labels"][i])
+            test_embeddings["text_embeddings"].append(text_embedding)
+            test_embeddings["ehr_scores"].append([item["score"] for item in reports["case_history"]["doctor_scores"]])
+            test_embeddings["ehr_embeddings"].append(ehr_embeddings[i])
+
     # Save results
-    pd.to_pickle(results, os.path.join("logs", args.dataset, args.task, "all_embeddings.pkl"))
+    pd.to_pickle(results, os.path.join("logs", args.dataset, args.task, method, "all_embeddings.pkl"))
+    pd.to_pickle(train_embeddings, os.path.join("logs", args.dataset, args.task, method, "train_embeddings.pkl"))
+    pd.to_pickle(val_embeddings, os.path.join("logs", args.dataset, args.task, method, "val_embeddings.pkl"))
+    pd.to_pickle(test_embeddings, os.path.join("logs", args.dataset, args.task, method, "test_embeddings.pkl"))
 
 
 if __name__ == "__main__":

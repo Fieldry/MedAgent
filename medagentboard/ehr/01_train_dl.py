@@ -185,7 +185,7 @@ if __name__ == "__main__":
             'task': args.task,
         }, **perf_boot)
         perf_df = pd.DataFrame(perf_boot, index=[0])
-        perf_df.to_csv(os.path.join(save_dir, "performance.csv"), index=False)
+        perf_df.to_csv(os.path.join(save_dir, "performance_fusion.csv"), index=False)
         pd.to_pickle(outs, os.path.join(save_dir, "outputs.pkl"))
         print(f"Performance and outputs saved to {save_dir}")
 
@@ -194,8 +194,8 @@ if __name__ == "__main__":
 
     # Save all performance
     try:
-        perf_all_df.to_csv(os.path.join(args.output_root, f"{args.dataset}/{args.task}/all_performance.csv"), index=False)
-        print(f"All performances saved to {os.path.join(args.output_root, f'{args.dataset}/{args.task}/all_performance.csv')}")
+        perf_all_df.to_csv(os.path.join(args.output_root, f"{args.dataset}/{args.task}/all_performance_fusion.csv"), index=False)
+        print(f"All performances saved to {os.path.join(args.output_root, f'{args.dataset}/{args.task}/all_performance_fusion.csv')}")
     except Exception as e:
         print(e)
     print("All experiments completed.")
