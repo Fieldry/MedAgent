@@ -1,5 +1,8 @@
 my_datasets/
 logs/
+cache/
+
+datasets_info.py
 
 .DS_Store
 prompt_*.txt
