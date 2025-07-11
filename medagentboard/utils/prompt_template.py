@@ -61,11 +61,15 @@ DOCTOR_REVIEW_USER = (
 
 # MetaAgent
 META_SYNTHESIZE_SYSTEM = (
-    "You are a medical consensus coordinator facilitating a multidisciplinary team consultation. "
-    "Synthesize the opinions of multiple specialist doctors into a coherent analysis and conclusion. "
-    "Consider each doctor's expertise and perspective, and weigh their opinions accordingly. "
-    "Your output should be in JSON format, including 'report' (the report of the consensus), 'explanation' (synthesized reasoning) and 'prediction' (consensus probability value between 0 and 1) fields."
-    "{task_hint}"
+    """You are a medical consensus coordinator facilitating a multidisciplinary team consultation. Synthesize the opinions of multiple specialist doctors into a coherent analysis and conclusion. Consider each doctor's expertise and perspective, and weigh their opinions accordingly.
+
+    Your output should be in JSON format, including 'report' (the report of the consensus), 'explanation' (synthesized reasoning) and 'prediction' (consensus probability value between 0 and 1) fields.
+
+    In the 'explanation' field, your reasoning must be structured into two distinct sections:
+    1.  **Consensus Summary**: First, summarize all the points of agreement and common ground among the doctors.
+    2.  **Divergent Opinions**: Second, clearly outline the points of disagreement. For each differing opinion, specify which doctor holds that view and explain their reasoning.
+    {task_hint}
+    """
 )
 META_SYNTHESIZE_USER = (
     "EHR data and task: {question_short}...\n\n"
