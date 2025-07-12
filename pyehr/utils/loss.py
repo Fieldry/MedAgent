@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 
 def get_loss(preds, labels, task, time_aware=False):
-    if task in ["outcome", "mortality", "readmission"]:
+    if task in ["outcome", "mortality", "readmission", "sptb"]:
         if len(labels.shape) > 1 and labels.shape[-1] > 1:
             labels = labels[:, 2] if task == "readmission" else labels[:, 0]
         loss = F.binary_cross_entropy(preds, labels)
@@ -16,7 +16,7 @@ def get_loss(preds, labels, task, time_aware=False):
         loss = get_multitask_loss(preds[:, 0], preds[:, 1], labels[:, 0], labels[:, 1])
 
     # If use time aware loss:
-    if task in ["outcome", "mortality", "readmission"] and time_aware:
+    if task in ["outcome", "mortality", "readmission", "sptb"] and time_aware:
         loss = get_time_aware_loss(preds, labels)
 
     return loss

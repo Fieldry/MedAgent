@@ -14,7 +14,7 @@ def get_all_metrics(preds, labels, task, los_info):
     if not isinstance(labels, torch.Tensor):
         labels = torch.tensor(labels)
 
-    if task in ["outcome", "mortality", "readmission"]:
+    if task in ["outcome", "mortality", "readmission", "sptb"]:
         if len(labels.shape) > 1 and labels.shape[-1] > 1:
             labels = labels[:, 2] if task == "readmission" else labels[:, 0]
         return get_binary_metrics(preds, labels)
@@ -91,7 +91,7 @@ def check_metric_is_better(cur_best, main_metric, score, task):
         if score < cur_best[main_metric]:
             return True
         return False
-    elif task in ["mortality", "readmission", "multitask"]:
+    elif task in ["mortality", "readmission", "sptb", "multitask"]:
         if cur_best == {}:
             return True
         if score > cur_best[main_metric]:

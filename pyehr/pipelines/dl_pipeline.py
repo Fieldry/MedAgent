@@ -29,7 +29,7 @@ class DlPipeline(L.LightningModule):
 
         model_class = getattr(models, self.model_name)
         self.ehr_encoder = model_class(**config)
-        if self.task in ["outcome", "mortality", "readmission"]:
+        if self.task in ["outcome", "mortality", "readmission", "sptb"]:
             self.head = nn.Sequential(nn.Linear(self.hidden_dim, self.output_dim), nn.Dropout(0.0), nn.Sigmoid())
         elif self.task == "los":
             self.head = nn.Sequential(nn.Linear(self.hidden_dim, self.output_dim), nn.Dropout(0.0))
