@@ -7,13 +7,12 @@ import torch.utils.data as data
 
 
 class EhrDataset(data.Dataset):
-    def __init__(self, data_path, task, mode='train'):
+    def __init__(self, data_path, task, mode="train"):
         super().__init__()
-        mode = 'fusion' if mode == 'test' else mode
-        self.dataset = pd.read_pickle(os.path.join(data_path, f'{mode}_data.pkl'))
-        self.id = [item['id'] for item in self.dataset]
-        self.data = [item['x_ts'] for item in self.dataset]
-        self.label = [item[f'y_{task}'] for item in self.dataset]
+        self.dataset = pd.read_pickle(os.path.join(data_path, f"{mode}_data.pkl"))
+        self.id = [item["id"] for item in self.dataset]
+        self.data = [item["x_ts"] for item in self.dataset]
+        self.label = [item[f"y_{task}"] for item in self.dataset]
 
     def __len__(self):
         return len(self.label)
@@ -27,8 +26,8 @@ class EhrDataModule(L.LightningDataModule):
         super().__init__()
         self.batch_size = batch_size
         self.train_dataset = EhrDataset(data_path, task, mode="train")
-        self.val_dataset = EhrDataset(data_path, task, mode='val')
-        self.test_dataset = EhrDataset(data_path, task, mode='test')
+        self.val_dataset = EhrDataset(data_path, task, mode="val")
+        self.test_dataset = EhrDataset(data_path, task, mode="test")
 
     def train_dataloader(self):
         return data.DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True , collate_fn=self.pad_collate, num_workers=8)
