@@ -1,16 +1,19 @@
 import os
 import argparse
 import json
+from collections import OrderedDict
 from typing import List, Tuple, Any, Dict
 
 import pandas as pd
 import numpy as np
 
 from medagentboard.utils.datasets_info import medical_name, medical_unit, medical_standard, original_disease, disease_english
+from medagentboard.utils.generate_obste_note import generate_obste_note
 
 
 def generate_prompt(
     dataset: str,
+    task: str,
     models: List[str],
     basic_data: Dict,
     ys: List[float],
@@ -33,16 +36,18 @@ def generate_prompt(
         gender = "male" if basic_data["Sex"] == 1 else "female"
         age = basic_data["Age"]
         basic_context = f"This {gender} patient, aged {age}, is an patient admitted with a diagnosis of COVID-19 or suspected COVID-19 infection.\n"
+    elif dataset == 'obstetrics':
+        basic_context = generate_obste_note(basic_data)
     else:  # [mimic-iii, mimic-iv]
         gender = "male" if basic_data["Sex"] == 1 else "female"
         age = basic_data["Age"]
         basic_context = f"This {gender} patient, aged {age}, is an patient in intensive care unit (ICU).\n"
 
-    last_visit_all_context = f"We have {len(models)} models {', '.join(models)} to predict the mortality risk and estimate the feature importance weight for the patient in the last visit:\n"
+    last_visit_all_context = f"We have {len(models)} models {', '.join(models)} to predict the {task} risk and estimate the feature importance weight for the patient in the last visit:\n"
     last_visit_contexts = []
     for model, y, important_features_item in zip(models, ys, important_features):
-        last_visit_context = f"We have model {model} to predict the mortality risk and estimate the feature importance weight for the patient in the last visit:\n"
-        last_visit = f"The mortality prediction risk for the patient from {model} model is {round(float(y), 2)} out of 1.0, which means the patient is at {get_death_desc(float(y))} of death risk. Our model especially pays great attention to the following features:\n"
+        last_visit_context = f"We have model {model} to predict the {task} risk and estimate the feature importance weight for the patient in the last visit:\n"
+        last_visit = f"The {task} prediction risk for the patient from {model} model is {round(float(y), 2)} out of 1.0, which means the patient is at {get_death_desc(float(y))} of death risk. Our model especially pays great attention to the following features:\n"
         for item in important_features_item:
             key, value, attention = item
             survival_mean = survival_stats[key]['mean']
@@ -51,7 +56,7 @@ def generate_prompt(
             key_unit = ' ' + medical_unit[key] if key in medical_unit else ''
             last_visit += f'{key_name}: with '
             last_visit += f'importance weight of {round(float(attention), 3)} out of 1.0. '
-            last_visit += f'The feature value is {round(value, 2)}{key_unit}, which is {get_mean_desc(value, survival_mean)} than the average value of survival patients ({round(survival_mean, 2)}{key_unit}), {get_mean_desc(value, dead_mean)} than the average value of dead patients ({round(dead_mean, 2)}{key_unit}).\n'
+            last_visit += f'The feature value is {round(value, 2)}{key_unit}, which is {get_mean_desc(value, survival_mean)} than the average value of negative samples ({round(survival_mean, 2)}{key_unit}), {get_mean_desc(value, dead_mean)} than the average value of positive samples ({round(dead_mean, 2)}{key_unit}).\n'
         last_visit_context += last_visit
         last_visit_contexts.append(last_visit_context)
         last_visit_all_context += last_visit
@@ -87,8 +92,6 @@ def format_input_ehr(
     patient = np.array(patient)[:, demo_dim:].tolist()
     mask = np.array(mask)[:, demo_dim:].tolist()
 
-    feature_values = {}
-
     # Define some categorical features with their possible values
     categorical_features_dict = {
         "Glascow coma scale eye opening": {
@@ -114,35 +117,69 @@ def format_input_ehr(
         },
     }
 
-    if dataset == 'mimic-iv':
-        for i, feature in enumerate(features):
-            feature_values[feature] = []
-            for visit, m in zip(patient, mask):
-                if m[i] == 1:
-                    value = 'NaN'
-                elif feature in categorical_features_dict.keys():
-                    value = categorical_features_dict[feature].get(visit[i], 'NaN')
-                else:
-                    value = str(visit[i])
-                feature_values[feature].append(value)
-    elif dataset in ['tjh', 'esrd']:
-        for i, feature in enumerate(features):
-            feature_values[feature] = []
-            for visit, m in zip(patient, mask):
-                value = str(visit[i]) if m[i] == 0 else 'NaN'
-                feature_values[feature].append(value)
+    grouped_features = OrderedDict()
+    for i, feature_name in enumerate(features):
+        if '->' in feature_name:
+            base_name, value_str = feature_name.split('->', 1)
+            value = float(value_str)
+            if base_name not in grouped_features:
+                grouped_features[base_name] = {
+                    'type': 'categorical',
+                    'components': []
+                }
+            grouped_features[base_name]['components'].append({'index': i, 'value': value})
+        else:
+            grouped_features[feature_name] = {
+                'type': 'continuous',
+                'index': i
+            }
+
+    feature_values = {key: [] for key in grouped_features.keys()}
+
+    for visit_idx in range(len(patient)):
+        visit_data = patient[visit_idx]
+        visit_mask = mask[visit_idx]
+
+        for base_name, info in grouped_features.items():
+            final_value = 'NaN'
+
+            if info['type'] == 'categorical':
+                is_missing = True
+                for component in info['components']:
+                    idx = component['index']
+                    if visit_mask[idx] == 0:
+                        is_missing = False
+                        if visit_data[idx] == 1.0:
+                            category_value = component['value']
+                            if base_name in categorical_features_dict and categorical_features_dict[base_name]:
+                                final_value = categorical_features_dict[base_name].get(category_value, str(category_value))
+                            else:
+                                final_value = str(int(category_value))
+                            break
+                if is_missing:
+                    final_value = 'NaN'
+
+            elif info['type'] == 'continuous':
+                idx = info['index']
+                if visit_mask[idx] == 0:
+                    final_value = f"{visit_data[idx]:.2f}"
+
+            feature_values[base_name].append(final_value)
 
     detail = ''
     if record_time is not None:
         assert len(patient) == len(record_time), "The length of patient and record_time should be the same."
         detail += "The patient's EHR data is recorded at the following time points:\n"
         detail += ", ".join(record_time) + ".\n"
-    for feature in features:
-        detail += f'- {feature}: [{", ".join(feature_values[feature])}]\n'
+
+    for feature_name in grouped_features.keys():
+        values_str = ", ".join(feature_values[feature_name])
+        detail += f'- {feature_name}: [{values_str}]\n'
+
     return detail.strip() + '\n'
 
 
-def load_dataset(root_path: str, dataset: str, task: str) -> Tuple[List, List, List, List, List, List, List, Any]:
+def load_dataset(root_path: str, dataset: str, task: str, split: str="split") -> Tuple[List, List, List, List, List, List, List, Any]:
     """
     Load dataset based on configuration.
 
@@ -152,7 +189,7 @@ def load_dataset(root_path: str, dataset: str, task: str) -> Tuple[List, List, L
     Returns:
         Tuple of dataset components
     """
-    dataset_path = os.path.join(root_path, f'{dataset}/processed/split')
+    dataset_path = os.path.join(root_path, f'{dataset}/processed/{split}')
     data = pd.read_pickle(os.path.join(dataset_path, 'fusion_data.pkl'))
     ids = [item['id'] for item in data]
     xs = [item['x_ts'] for item in data]
@@ -160,13 +197,24 @@ def load_dataset(root_path: str, dataset: str, task: str) -> Tuple[List, List, L
     ys = [item[f'y_{task}'] for item in data]
     missing_masks = [item['missing_mask'] for item in data]
     record_times = [item['record_time'] for item in data]
-    labtest_features = pd.read_pickle(os.path.join(dataset_path, 'labtest_features.pkl'))
+
     if dataset == 'mimic-iv':
-        ehr_labtest_features = pd.read_pickle(os.path.join(dataset_path, 'ehr_labtest_features.pkl'))
+        labtest_features = pd.read_pickle(os.path.join(dataset_path, 'ehr_labtest_features.pkl'))
         x_note = [item['x_note'] for item in data]
     else:
-        ehr_labtest_features = labtest_features
+        labtest_features = pd.read_pickle(os.path.join(dataset_path, 'labtest_features.pkl'))
         x_note = None
+
+    if dataset == 'obstetrics':
+        positive_stats = pd.read_pickle(os.path.join(dataset_path, 'positive_stats.pkl'))
+        negative_stats = pd.read_pickle(os.path.join(dataset_path, 'negative_stats.pkl'))
+        basic_info = pd.read_csv(os.path.join(dataset_path, f'demo_{split}.csv'))
+        basic_info = {item['PatientID']: item for item in basic_info.to_dict(orient='records')}
+    else:
+        positive_stats = pd.read_pickle(os.path.join(dataset_path, 'dead.pkl'))
+        negative_stats = pd.read_pickle(os.path.join(dataset_path, 'survival.pkl'))
+        basic_info = pd.read_pickle(os.path.join(dataset_path, 'basic.pkl'))
+
     if task == 'los':
         try:
             los_info = pd.read_pickle(os.path.join(dataset_path, 'los_info.pkl'))
@@ -174,11 +222,8 @@ def load_dataset(root_path: str, dataset: str, task: str) -> Tuple[List, List, L
             raise FileNotFoundError(f"LOS info file not found in {dataset_path}.")
     else:
         los_info = None
-    basic_info = pd.read_pickle(os.path.join(dataset_path, 'basic.pkl'))
-    survival_stats = pd.read_pickle(os.path.join(dataset_path, 'survival.pkl'))
-    dead_stats = pd.read_pickle(os.path.join(dataset_path, 'dead.pkl'))
 
-    return ids, xs, x_llm_ts, x_note, ys, missing_masks, record_times, labtest_features, ehr_labtest_features, los_info, basic_info, survival_stats, dead_stats
+    return ids, xs, x_llm_ts, x_note, ys, missing_masks, record_times, labtest_features, los_info, basic_info, negative_stats, positive_stats
 
 
 def load_training_results(root_path: str, dataset: str, task: str, model: str) -> Tuple[List, List]:
@@ -264,10 +309,8 @@ def get_distribution(data, values):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate query for LLM")
-    parser.add_argument("--dataset", "-d", type=str, required=True, choices=["mimic-iv", "tjh", "esrd"],
-                       help="Specify dataset name: mimic-iv or tjh")
-    parser.add_argument("--task", "-t", type=str, required=True, choices=["mortality", "readmission"],
-                       help="Prediction task: mortality or readmission")
+    parser.add_argument("--dataset", "-d", type=str, required=True, choices=["mimic-iv", "tjh", "esrd", "obstetrics"], help="Specify dataset name: mimic-iv or tjh or esrd or obstetrics")
+    parser.add_argument("--task", "-t", type=str, required=True, choices=["mortality", "readmission", "sptb", "los"], help="Prediction task: mortality or readmission or sptb or los")
     parser.add_argument("--models", "-m", nargs='+', default=["AdaCare", "ConCare", "RETAIN"],
                        help="DL models to use for generating query")
     parser.add_argument("--modality", "-mo", type=str, default="ehr", choices=["ehr", "note", "mm"],
@@ -280,6 +323,7 @@ def main():
     modality = args.modality
     print(f"Dataset: {dataset}, Task: {task}, Models: {models}, Modality: {modality}")
 
+    split = "split"
     if dataset == 'tjh':
         demo_dim = 2
         lab_dim = 73
@@ -289,13 +333,17 @@ def main():
     elif args.dataset == 'esrd':
         demo_dim = 0
         lab_dim = 17
+    elif args.dataset == 'obstetrics':
+        demo_dim = 0
+        lab_dim = 32
+        split = "solo"
     else:
-        raise ValueError("Unsupported dataset. Choose either 'tjh' or 'mimic-iv' or 'esrd'.")
+        raise ValueError("Unsupported dataset. Choose either 'tjh' or 'mimic-iv' or 'esrd' or 'obstetrics'.")
 
     dataset_root = "my_datasets/ehr"
     results_root = "logs"
 
-    ids, xs, x_llm_ts, x_note, labels, missing_masks, record_times, labtest_features, ehr_labtest_features, _, basic_info, survival_stats, dead_stats = load_dataset(dataset_root, dataset, task)
+    ids, _, x_llm_ts, x_note, labels, missing_masks, record_times, labtest_features, _, basic_info, survival_stats, dead_stats = load_dataset(dataset_root, dataset, task, split)
     preds = {}
     attns = {}
     for model in models:
@@ -313,8 +361,8 @@ def main():
         important_features_item = []
         for model in models:
             preds_item.append(preds[model][i])
-            important_features_item.append(process_important_features(x_llm_ts[i][-1], attns[model][i], ehr_labtest_features, demo_dim))
-        basic_context, last_visit_contexts = generate_prompt(dataset, models, basic_data, preds_item, important_features_item, survival_stats, dead_stats)
+            important_features_item.append(process_important_features(x_llm_ts[i][-1], attns[model][i], labtest_features, demo_dim))
+        basic_context, last_visit_contexts = generate_prompt(dataset, task, models, basic_data, preds_item, important_features_item, survival_stats, dead_stats)
 
         ehr_contexts = [basic_context + ehr_context + last_visit_context for last_visit_context in last_visit_contexts]
         note_context = f"Here is the patient's clinical note data.\n{x_note[i]}\n" if x_note is not None else ""
