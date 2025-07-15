@@ -192,9 +192,15 @@ TASK_HINT_READMISSION = (
     " For readmission prediction, your 'prediction' field should reflect the probability of patient "
     "readmission within 30 days post-discharge (higher values indicate higher readmission risk)."
 )
+TASK_HINT_SPTB = (
+    " For spontaneous preterm birth prediction, your 'prediction' field should reflect the probability of spontaneous preterm birth (higher values indicate higher spontaneous preterm birth risk)."
+)
 TASK_HINT_REVIEW_MORTALITY = (
     " Remember, the prediction value should reflect the probability of mortality (higher values indicate higher mortality risk)."
 )
 TASK_HINT_REVIEW_READMISSION = (
     " Remember, the prediction value should reflect the probability of readmission within 30 days (higher values indicate higher readmission risk)."
+)
+TASK_HINT_REVIEW_SPTB = (
+    " Remember, the prediction value should reflect the probability of spontaneous preterm birth (higher values indicate higher spontaneous preterm birth risk)."
 )
