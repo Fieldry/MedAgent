@@ -57,13 +57,14 @@ for kind in ['solo', 'multi']:
         patients, patients_outcome, test_size=300, random_state=SEED, stratify=patients_outcome
     )
 
+    if len(train_val_patients) > 10000:
+        _, train_val_patients, _, train_val_outcomes = train_test_split(
+            train_val_patients, train_val_outcomes, test_size=10000, random_state=SEED, stratify=train_val_outcomes
+        )
+
     train_patients, val_patients, _, _ = train_test_split(
         train_val_patients, train_val_outcomes, test_size=1/8, random_state=SEED, stratify=train_val_outcomes
     )
-
-    print("Train patients size:", len(train_patients))
-    print("Validation patients size:", len(val_patients))
-    print("Test patients size:", len(test_patients))
 
     assert len(set(train_patients) & set(val_patients)) == 0, "Data leakage between train and val sets"
     assert len(set(train_patients) & set(test_patients)) == 0, "Data leakage between train and test sets"
@@ -155,5 +156,3 @@ for kind in ['solo', 'multi']:
     pd.to_pickle(df.groupby('Outcome').get_group(1).describe().to_dict('dict'), os.path.join(save_dir, 'positive_stats.pkl'))
 
     pd.to_pickle(labtest_features, os.path.join(save_dir, "labtest_features.pkl"))
-
-print(f"\n数据处理完成！所有文件已保存至 '{save_dir}' 目录。")

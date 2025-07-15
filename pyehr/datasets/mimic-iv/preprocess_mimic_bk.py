@@ -35,6 +35,36 @@ normalize_features = ['Age'] + numerical_labtest_features + ['LOS']
 df = pd.read_parquet(os.path.join(processed_data_dir, 'mimic-iv-timeseries-note.parquet'))
 df = df[basic_records + target_features + note_features + demographic_features + labtest_features]
 
+# Ensure the data is sorted by RecordID and RecordTime
+df = df.sort_values(by=['RecordID', 'RecordTime']).reset_index(drop=True)
+
+# Group the dataframe by `RecordID`
+grouped = df.groupby('RecordID')
+
+# Get the patient IDs and outcomes
+patients = np.array(list(grouped.groups.keys()))
+patients_outcome = np.array([grouped.get_group(patient_id)['Outcome'].iloc[0] for patient_id in patients])
+
+# Randomly select 300 patients for the test set
+train_val_patients, test_patients = train_test_split(patients, test_size=300, random_state=SEED, stratify=patients_outcome)
+test_df = df[df['RecordID'].isin(test_patients)]
+
+# For llm setting, export data on test set:
+# Export the missing mask
+train_missing_mask = export_missing_mask(df, demographic_features, labtest_features, id_column='RecordID')
+val_missing_mask = export_missing_mask(df, demographic_features, labtest_features, id_column='RecordID')
+test_missing_mask = export_missing_mask(test_df, demographic_features, labtest_features, id_column='RecordID')
+
+# Export the record time
+train_record_time = export_record_time(df, id_column='RecordID')
+val_record_time = export_record_time(df, id_column='RecordID')
+test_record_time = export_record_time(test_df, id_column='RecordID')
+
+# Export the raw data
+_, train_raw_x, _, _ = forward_fill_pipeline(df, None, demographic_features, labtest_features, target_features, [], id_column='RecordID')
+_, val_raw_x, _, _ = forward_fill_pipeline(df, None, demographic_features, labtest_features, target_features, [], id_column='RecordID')
+_, test_raw_x, _, _ = forward_fill_pipeline(test_df, None, demographic_features, labtest_features, target_features, [], id_column='RecordID')
+
 # For ml/dl models, convert categorical features to one-hot encoding
 one_hot = pd.get_dummies(df[categorical_labtest_features], columns=categorical_labtest_features, prefix_sep='->', dtype=float)
 columns = df.columns.to_list()
@@ -50,15 +80,12 @@ require_impute_features = ehr_labtest_features
 # Group the dataframe by patient ID
 grouped = df.groupby('RecordID')
 
-# Randomly select 300 patients for the test set
-patients = np.array(list(grouped.groups.keys()))
-patients_outcome = np.array([grouped.get_group(patient_id)['Outcome'].iloc[0] for patient_id in patients])
-train_val_patients, test_patients, train_val_patients_outcome, _ = train_test_split(patients, patients_outcome, test_size=300, random_state=SEED, stratify=patients_outcome)
-
 # Randomly select 10000 patients for the train/val set
-_, train_val_patients, _, train_val_patients_outcome = train_test_split(train_val_patients, train_val_patients_outcome, test_size=10000, random_state=SEED, stratify=train_val_patients_outcome)
+train_val_patients_outcome = np.array([grouped.get_group(patient_id)['Outcome'].iloc[0] for patient_id in train_val_patients])
+train_val_patients = train_test_split(train_val_patients, test_size=10000, random_state=SEED, stratify=train_val_patients_outcome)[1]
 
 # Split the train/val set into train and val sets, 7/8 for train and 1/8 for val
+train_val_patients_outcome = np.array([grouped.get_group(patient_id)['Outcome'].iloc[0] for patient_id in train_val_patients])
 train_patients, val_patients = train_test_split(train_val_patients, test_size=1/8, random_state=SEED, stratify=train_val_patients_outcome)
 
 # Print the sizes of the datasets
@@ -75,21 +102,6 @@ assert len(set(val_patients) & set(test_patients)) == 0, "Data leakage between v
 train_df = df[df['RecordID'].isin(train_patients)]
 val_df = df[df['RecordID'].isin(val_patients)]
 test_df = df[df['RecordID'].isin(test_patients)]
-
-# Export the missing mask
-train_missing_mask = export_missing_mask(train_df, demographic_features, ehr_labtest_features, id_column='RecordID')
-val_missing_mask = export_missing_mask(val_df, demographic_features, ehr_labtest_features, id_column='RecordID')
-test_missing_mask = export_missing_mask(test_df, demographic_features, ehr_labtest_features, id_column='RecordID')
-
-# Export the record time
-train_record_time = export_record_time(train_df, id_column='RecordID')
-val_record_time = export_record_time(val_df, id_column='RecordID')
-test_record_time = export_record_time(test_df, id_column='RecordID')
-
-# Export the raw data
-_, train_raw_x, _, _ = forward_fill_pipeline(train_df, None, demographic_features, ehr_labtest_features, target_features, [], id_column='RecordID')
-_, val_raw_x, _, _ = forward_fill_pipeline(val_df, None, demographic_features, ehr_labtest_features, target_features, [], id_column='RecordID')
-_, test_raw_x, _, _ = forward_fill_pipeline(test_df, None, demographic_features, ehr_labtest_features, target_features, [], id_column='RecordID')
 
 # Calculate the mean and std of the train set (include age, lab test features, and LOS) on the data in 5% to 95% quantile range
 train_df, val_df, test_df, default_fill, los_info, train_mean, train_std = normalize_dataframe(train_df, val_df, test_df, normalize_features, id_column="RecordID")
@@ -186,3 +198,24 @@ pd.to_pickle({
 # Export the survival and death statistics
 pd.to_pickle(df.groupby('Outcome').get_group(0).describe().to_dict('dict'), os.path.join(save_dir, 'survival.pkl'))
 pd.to_pickle(df.groupby('Outcome').get_group(1).describe().to_dict('dict'), os.path.join(save_dir, 'dead.pkl'))
+
+# Extract 10 shots (5 pos nad 5 neg) from train set and valid set
+train_pos_data = [item for item in train_data if item['y_mortality'][0] == 1]
+train_neg_data = [item for item in train_data if item['y_mortality'][0] == 0]
+val_pos_data = [item for item in val_data if item['y_mortality'][0] == 1]
+val_neg_data = [item for item in val_data if item['y_mortality'][0] == 0]
+train_pos_data = random.sample(train_pos_data, min(5, len(train_pos_data)))
+train_neg_data = random.sample(train_neg_data, min(5, len(train_neg_data)))
+val_pos_data = random.sample(val_pos_data, min(5, len(val_pos_data)))
+val_neg_data = random.sample(val_neg_data, min(5, len(val_neg_data)))
+train_shot_data = train_pos_data + train_neg_data
+val_shot_data = val_pos_data + val_neg_data
+
+save_dir = os.path.join(processed_data_dir, '10_shot')
+os.makedirs(save_dir, exist_ok=True)
+
+# Save the data to pickle files
+pd.to_pickle(train_shot_data, os.path.join(save_dir, "train_data.pkl"))
+pd.to_pickle(val_shot_data, os.path.join(save_dir, "val_data.pkl"))
+pd.to_pickle(test_data, os.path.join(save_dir, "test_data.pkl"))
+pd.to_pickle(los_info, os.path.join(save_dir, "los_info.pkl"))
