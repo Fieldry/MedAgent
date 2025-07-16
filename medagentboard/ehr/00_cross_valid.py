@@ -14,7 +14,8 @@ from pyehr.utils.bootstrap import run_bootstrap
 
 def run_dl_experiment(config):
     # data
-    dataset_path = f'my_datasets/ehr/{config["dataset"]}/processed/{config["split"]}/fold_{config["fold"]}'
+    version = f"{config['split']}/fold_{config['fold']}" if "split" in config else f"fold_{config['fold']}"
+    dataset_path = f'my_datasets/ehr/{config["dataset"]}/processed/{version}'
     dm = EhrDataModule(dataset_path, task=config["task"], batch_size=config["batch_size"])
 
     # los infomation
@@ -22,7 +23,7 @@ def run_dl_experiment(config):
     config["los_info"] = los_info
 
     # logger
-    logger = CSVLogger(save_dir="logs", name=f'{config["dataset"]}/{config["task"]}', version=f"{config['model']}")
+    logger = CSVLogger(save_dir="logs", name=f'{config["dataset"]}/{config["task"]}/{config["model"]}', version=version)
 
     # main metric
     main_metric = "auroc" if config["task"] in ["mortality", "readmission", "sptb"] else "mae"
@@ -167,7 +168,8 @@ if __name__ == "__main__":
                 config, perf, outs = run_experiment(config)
             except Exception as e:
                 print(f"Error occurred while running the experiment for model {model}.")
-                print(e)
+                import traceback
+                traceback.print_exc()
                 continue
 
             # Save the performance and outputs
