@@ -1,5 +1,4 @@
 import os
-import pickle
 import argparse
 
 import numpy as np
@@ -23,9 +22,15 @@ def find_best_model_path(log_dir: str):
             version = file.split('.')[0]
             if 'v' in version:
                 versions.append(version.split('v')[-1])
-    versions.sort(key=lambda x: int(x), reverse=True)
-    latest_version = versions[0]
-    return os.path.join(log_dir, f"best-v{latest_version}.ckpt")
+
+    if versions:
+        versions.sort(key=lambda x: int(x), reverse=True)
+        latest_version = versions[0]
+        return os.path.join(log_dir, f"best-v{latest_version}.ckpt")
+    elif os.path.exists(os.path.join(log_dir, "best.ckpt")):
+        return os.path.join(log_dir, "best.ckpt")
+    else:
+        return None
 
 
 def run_dl_experiment(config):
@@ -40,6 +45,10 @@ def run_dl_experiment(config):
 
     # logger
     logger = CSVLogger(save_dir="logs", name=f'{config["dataset"]}/{config["task"]}/{config["model"]}', version=version)
+
+    # main metric
+    main_metric = "auroc" if config["task"] in ["mortality", "readmission", "sptb"] else "mae"
+    config["main_metric"] = main_metric
 
     # seed for reproducibility
     L.seed_everything(42)
@@ -56,6 +65,8 @@ def run_dl_experiment(config):
 
     # Load best model checkpoint
     best_model_path = find_best_model_path(os.path.join("logs", f"{config['dataset']}/{config['task']}/{config['model']}/fold_{config['fold']}/checkpoints"))
+    if best_model_path is None:
+        raise ValueError(f"No best model found for {config['dataset']}/{config['task']}/{config['model']}/fold_{config['fold']}")
     print("best_model_path:", best_model_path)
     pipeline = DlPipeline.load_from_checkpoint(best_model_path, config=config)
     val_loader = dm.val_dataloader()
@@ -93,6 +104,18 @@ def parse_args():
     parser.add_argument("--model", "-m", type=str, nargs="+", required=True, help="Model name (2 or 3 models recommended)")
     parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name", choices=["tjh", "mimic-iv", "esrd", "obstetrics"])
     parser.add_argument("--task", "-t", type=str, required=True, help="Task name", choices=["mortality", "readmission", "los", "sptb"])
+
+    # Model and training hyperparameters
+    parser.add_argument("--hidden_dim", "-hd", type=int, default=128, help="Hidden dimension")
+    parser.add_argument("--learning_rate", "-lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--batch_size", "-bs", type=int, default=128, help="Batch size")
+    parser.add_argument("--epochs", "-e", type=int, default=50, help="Number of epochs")
+    parser.add_argument("--patience", "-p", type=int, default=5, help="Patience for early stopping")
+    parser.add_argument("--output_dim", "-od", type=int, default=1, help="Output dimension")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument("--n_estimators", type=int, default=100, help="Number of estimators for tree-based models")
+    parser.add_argument("--max_depth", type=int, default=10, help="Max depth for tree-based models")
+
     args = parser.parse_args()
     return args
 
@@ -143,7 +166,7 @@ if __name__ == "__main__":
     for model in model_names:
         config["model"] = model
 
-        for i in range(10):
+        for i in range(6):
             config["fold"] = i
 
             # Print the configuration
@@ -160,9 +183,13 @@ if __name__ == "__main__":
                 traceback.print_exc()
                 continue
 
-            all_labels.append(outs['labels'])
+            if model == model_names[0]:
+                all_labels.append(outs['labels'])
             model_preds[model].append(outs['preds'])
             model_correctness[model].append(outs['preds'] >= threshold)
+
+            save_dir = os.path.join("logs", f"{args.dataset}/{args.task}/{model}/fold_{i}")
+            pd.to_pickle(outs, os.path.join(save_dir, "outputs.pkl"))
 
     for model_name in model_names:
         model_preds[model_name] = np.concatenate(model_preds[model_name])
@@ -171,11 +198,19 @@ if __name__ == "__main__":
     all_labels = np.concatenate(all_labels)
     total_samples = len(all_labels)
     print(f"Data loaded. Total samples across 10 folds: {total_samples}")
+    for model_name in model_names:
+        print(f"Model {model_name} has {len(model_preds[model_name])} predictions")
 
     # Compute bootstrap metrics
     perf_all_df = pd.DataFrame()
     for model_name in model_names:
-        perf_boot = run_bootstrap(model_preds[model_name], all_labels, {"task": task, "los_info": None})
+        try:
+            perf_boot = run_bootstrap(model_preds[model_name], all_labels, {"task": task, "los_info": None})
+        except Exception as e:
+            print(f"Error occurred while running bootstrap for model {model_name}.")
+            import traceback
+            traceback.print_exc()
+            continue
 
         for key, value in perf_boot.items():
             if task in ["mortality", "readmission", "sptb"]:
@@ -257,4 +292,7 @@ if __name__ == "__main__":
         transform=plt.gca().transAxes,
         bbox=dict(boxstyle='round,pad=0.5', fc='wheat', alpha=0.5)
     )
-    plt.show()
+    # plt.show()
+    plt.savefig(os.path.join("logs", f"{args.dataset}/{args.task}/venn_{dataset}_{task}_wocalib.png"))
+
+    plt.clf()
