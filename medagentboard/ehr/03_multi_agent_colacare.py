@@ -3,7 +3,7 @@ ehr_multi_agent_framework.py
 
 Multi-agent LLM framework for EHR predictive modeling tasks.
 This code adapts a medical QA multi-agent framework to process EHR time series data
-and make predictions for mortality and readmission probability.
+and make predictions for mortality, readmission, and other clinical outcomes.
 """
 
 import os
@@ -176,7 +176,7 @@ class DoctorAgent(BaseAgent):
 
         Args:
             question: Question containing structured EHR time series data
-            task_type: Type of task (mortality or readmission)
+            task_type: Type of task (mortality, readmission or spontaneous preterm birth)
 
         Returns:
             Dictionary containing analysis results and prediction
@@ -188,6 +188,8 @@ class DoctorAgent(BaseAgent):
             task_hint = prompt_template.TASK_HINT_MORTALITY
         elif task_type == "readmission":
             task_hint = prompt_template.TASK_HINT_READMISSION
+        elif task_type == "sptb":
+            task_hint = prompt_template.TASK_HINT_SPTB
         else:
             task_hint = ""
 
@@ -269,7 +271,7 @@ class DoctorAgent(BaseAgent):
         Args:
             question: Original question with EHR data
             synthesis: Meta agent's synthesis
-            task_type: Type of task (mortality or readmission)
+            task_type: Type of task (mortality, readmission or spontaneous preterm birth)
             current_round: Current round
 
         Returns:
@@ -289,6 +291,8 @@ class DoctorAgent(BaseAgent):
             task_hint = prompt_template.TASK_HINT_REVIEW_MORTALITY
         elif task_type == "readmission":
             task_hint = prompt_template.TASK_HINT_REVIEW_READMISSION
+        elif task_type == "sptb":
+            task_hint = prompt_template.TASK_HINT_REVIEW_SPTB
         else:
             task_hint = ""
 
@@ -417,7 +421,7 @@ class MetaAgent(BaseAgent):
             question: Original question with EHR data
             doctor_opinions: List of doctor opinions
             doctor_reviews: List of doctor reviews
-            task_type: Type of task (mortality or readmission)
+            task_type: Type of task (mortality, readmission or spontaneous preterm birth)
             current_round: Current round
 
         Returns:
@@ -430,6 +434,8 @@ class MetaAgent(BaseAgent):
             task_hint = prompt_template.TASK_HINT_MORTALITY
         elif task_type == "readmission":
             task_hint = prompt_template.TASK_HINT_READMISSION
+        elif task_type == "sptb":
+            task_hint = prompt_template.TASK_HINT_SPTB
         else:
             task_hint = ""
 
@@ -530,7 +536,7 @@ class MetaAgent(BaseAgent):
             current_synthesis: Current synthesized result
             current_round: Current round
             max_rounds: Maximum number of rounds
-            task_type: Type of task (mortality or readmission)
+            task_type: Type of task (mortality, readmission or spontaneous preterm birth)
 
         Returns:
             Dictionary containing final explanation and prediction
@@ -559,6 +565,8 @@ class MetaAgent(BaseAgent):
             task_hint = prompt_template.TASK_HINT_MORTALITY
         elif task_type == "readmission":
             task_hint = prompt_template.TASK_HINT_READMISSION
+        elif task_type == "sptb":
+            task_hint = prompt_template.TASK_HINT_SPTB
         else:
             task_hint = ""
 
@@ -713,7 +721,7 @@ class EvaluateAgent(BaseAgent):
             final_report_str: The final generated report.
             final_report_explanation: The 'explanation' part of the final generated report.
             final_report_prediction: The 'prediction' part of the final generated report.
-            task_type: Type of task (mortality or readmission).
+            task_type: Type of task (mortality, readmission or sptb).
             label: True label of the patient under the task.
 
         Returns:
@@ -845,7 +853,7 @@ class MDTConsultation:
         Args:
             qid: Question ID
             question: Question containing EHR data
-            task_type: Type of task (mortality or readmission)
+            task_type: Type of task (mortality, readmission or sptb)
             label: True label of the patient under the task
 
         Returns:
@@ -1112,7 +1120,7 @@ async def process_input(item, task_type, doctor_configs=None, meta_model_key="de
 
     Args:
         item: Input data dictionary with question
-        task_type: Type of task (mortality or readmission)
+        task_type: Type of task (mortality, readmission or spontaneous preterm birth)
         doctor_configs: List of doctor configurations (specialty and model_key)
         meta_model_key: Model key for the meta agent
         logger: Logger object for logging consultation process
@@ -1153,10 +1161,8 @@ async def process_input(item, task_type, doctor_configs=None, meta_model_key="de
 
 async def main():
     parser = argparse.ArgumentParser(description="Run MDT consultation on EHR datasets")
-    parser.add_argument("--dataset", "-d", type=str, required=True, choices=["mimic-iv", "tjh", "esrd"],
-                       help="Specify dataset name: mimic-iv or tjh or esrd")
-    parser.add_argument("--task", "-t", type=str, required=True, choices=["mortality", "readmission"],
-                       help="Prediction task: mortality or readmission")
+    parser.add_argument("--dataset", "-d", type=str, required=True, choices=["mimic-iv", "tjh", "esrd", "obstetrics"], help="Specify dataset name: mimic-iv or tjh or esrd")
+    parser.add_argument("--task", "-t", type=str, required=True, choices=["mortality", "readmission", "sptb"], help="Prediction task: mortality or readmission or sptb")
     parser.add_argument("--modality", "-mo", type=str, default="ehr", choices=["ehr", "note", "mm"],
                        help="Modality of the dataset: ehr or note or mm")
     parser.add_argument("--meta_model", type=str, default="deepseek-v3-official",
@@ -1176,7 +1182,7 @@ async def main():
     print(f"Dataset: {dataset_name}, Task: {task_type}, Modality: {modality}")
 
     # Validate the dataset and task combination
-    if dataset_name in ["tjh", "esrd"] and task_type == "readmission":
+    if dataset_name in ["tjh", "esrd", "obstetrics"] and task_type == "readmission":
         print(f"Error: The {dataset_name} dataset doesn't contain readmission task data.")
         return
 
@@ -1186,6 +1192,7 @@ async def main():
         "cdsl": "COVID-19",
         "mimic-iv": "Intensive Care",
         "tjh": "COVID-19",
+        "obstetrics": "Obstetrics",
     }
 
     dataset_specialty = SPECIALTIES_MAP.get(dataset_name, "General Medicine")
@@ -1223,13 +1230,9 @@ async def main():
 
     print(f"Configuring {len(doctor_configs)} doctors with models: {[cfg['model_key'] for cfg in doctor_configs]} and specialty: {dataset_specialty}")
 
-    to_run_pids = [215, 265, 318, 740, 455, 370, 598, 616, 812, 998]
     # Process each item
-    for item in tqdm(data, desc=f"Running MDT consultation on {dataset_name} {task_type}"):
+    for item in tqdm(data, total=len(data), desc=f"Running MDT consultation on {dataset_name} {task_type}"):
         qid = item["qid"]
-        if qid not in to_run_pids:
-            continue
-
         question = item["question"]
         label = item.get("ground_truth")
 

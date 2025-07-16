@@ -22,12 +22,12 @@ class EhrDataset(data.Dataset):
 
 
 class EhrDataModule(L.LightningDataModule):
-    def __init__(self, data_path, task, batch_size=32):
+    def __init__(self, data_path, task, batch_size=32, test_mode: str="test"):
         super().__init__()
         self.batch_size = batch_size
         self.train_dataset = EhrDataset(data_path, task, mode="train")
         self.val_dataset = EhrDataset(data_path, task, mode="val")
-        self.test_dataset = EhrDataset(data_path, task, mode="test")
+        self.test_dataset = EhrDataset(data_path, task, mode=test_mode)
 
     def train_dataloader(self):
         return data.DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True , collate_fn=self.pad_collate, num_workers=8)

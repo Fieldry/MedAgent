@@ -14,8 +14,8 @@ from pyehr.utils.bootstrap import run_bootstrap
 
 def run_dl_experiment(config):
     # data
-    dataset_path = f'my_datasets/ehr/{config["dataset"]}/processed/{config["split"]}'
-    dm = EhrDataModule(dataset_path, task=config["task"], batch_size=config["batch_size"], test_mode="fusion")
+    dataset_path = f'my_datasets/ehr/{config["dataset"]}/processed/{config["split"]}/fold_{config["fold"]}'
+    dm = EhrDataModule(dataset_path, task=config["task"], batch_size=config["batch_size"])
 
     # los infomation
     los_info = pd.read_pickle(os.path.join(dataset_path, "los_info.pkl")) if config["task"] == "los" else None
@@ -60,7 +60,7 @@ def run_dl_experiment(config):
 
 def run_ml_experiment(config):
     # data
-    dataset_path = f'my_datasets/ehr/{config["dataset"]}/processed/{config["split"]}'
+    dataset_path = f'my_datasets/ehr/{config["dataset"]}/processed/fold_{config["fold"]}'
     dm = EhrDataModule(dataset_path, task=config["task"], batch_size=config["batch_size"])
 
     # los infomation
@@ -138,11 +138,9 @@ if __name__ == "__main__":
     if args.dataset == "mimic-iv":
         config["demo_dim"] = 2
         config["lab_dim"] = 42
-        config["split"] = "split"
     elif args.dataset == "esrd":
         config["demo_dim"] = 0
         config["lab_dim"] = 17
-        config["split"] = "split"
     elif args.dataset == "obstetrics":
         config["demo_dim"] = 0
         config["lab_dim"] = 32
@@ -155,47 +153,49 @@ if __name__ == "__main__":
         # Add the model name to the configuration
         config["model"] = model
 
-        # Print the configuration
-        print("Configuration:")
-        for key, value in config.items():
-            print(f"{key}: {value}")
+        for fold in range(10):
+            config["fold"] = fold
 
-        # Run the experiment
-        try:
-            run_experiment = run_ml_experiment if model in ["CatBoost", "DT", "RF", "XGBoost"] else run_dl_experiment
-            config, perf, outs = run_experiment(config)
-        except Exception as e:
-            print(f"Error occurred while running the experiment for model {model}.")
-            print(e)
-            continue
+            # Print the configuration
+            print("Configuration:")
+            for key, value in config.items():
+                print(f"{key}: {value}")
 
-        print("Test samples:", len(outs['preds']))
+            # Run the experiment
+            try:
+                run_experiment = run_ml_experiment if model in ["CatBoost", "DT", "RF", "XGBoost"] else run_dl_experiment
+                config, perf, outs = run_experiment(config)
+            except Exception as e:
+                print(f"Error occurred while running the experiment for model {model}.")
+                print(e)
+                continue
 
-        # Save the performance and outputs
-        save_dir = os.path.join(args.output_root, f"{args.dataset}/{args.task}/{model}")
-        os.makedirs(save_dir, exist_ok=True)
+            # Save the performance and outputs
+            save_dir = os.path.join(args.output_root, f"{args.dataset}/{args.task}/{model}/fold_{fold}")
+            os.makedirs(save_dir, exist_ok=True)
 
-        # Run bootstrap
-        perf_boot = run_bootstrap(outs['preds'], outs['labels'], config)
-        for key, value in perf_boot.items():
-            if args.task in ["mortality", "readmission", "sptb"]:
-                perf_boot[key] = f'{value["mean"] * 100:.2f}±{value["std"] * 100:.2f}'
-            else:
-                perf_boot[key] = f'{value["mean"]:.2f}±{value["std"]:.2f}'
+            # Run bootstrap
+            perf_boot = run_bootstrap(outs['preds'], outs['labels'], config)
+            for key, value in perf_boot.items():
+                if args.task in ["mortality", "readmission"]:
+                    perf_boot[key] = f'{value["mean"] * 100:.2f}±{value["std"] * 100:.2f}'
+                else:
+                    perf_boot[key] = f'{value["mean"]:.2f}±{value["std"]:.2f}'
 
-        # Save performance and outputs
-        perf_boot = dict({
-            "model": model,
-            "dataset": args.dataset,
-            "task": args.task,
-        }, **perf_boot)
-        perf_df = pd.DataFrame(perf_boot, index=[0])
-        perf_df.to_csv(os.path.join(save_dir, "performance.csv"), index=False)
-        pd.to_pickle(outs, os.path.join(save_dir, "outputs.pkl"))
-        print(f"Performance and outputs saved to {save_dir}")
+            # Save performance and outputs
+            perf_boot = dict({
+                "model": model,
+                "dataset": args.dataset,
+                "task": args.task,
+                "fold": fold,
+            }, **perf_boot)
+            perf_df = pd.DataFrame(perf_boot, index=[0])
+            perf_df.to_csv(os.path.join(save_dir, "performance.csv"), index=False)
+            pd.to_pickle(outs, os.path.join(save_dir, "outputs.pkl"))
+            print(f"Performance and outputs saved to {save_dir}")
 
-        # Append performance to the all performance DataFrame
-        perf_all_df = pd.concat([perf_all_df, perf_df], ignore_index=True)
+            # Append performance to the all performance DataFrame
+            perf_all_df = pd.concat([perf_all_df, perf_df], ignore_index=True)
 
     # Save all performance
     try:

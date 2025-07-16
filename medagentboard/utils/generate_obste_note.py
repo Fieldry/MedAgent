@@ -1,7 +1,9 @@
+from typing import Dict
+
 import pandas as pd
 
 
-def generate_obste_note(row):
+def generate_obste_note(row: Dict):
     """
     根据单行患者数据（无论是单胎还是多胎）生成英文病历文本。
     """
@@ -110,9 +112,9 @@ if __name__ == "__main__":
     df = pd.read_csv("my_datasets/ehr/obstetrics/raw/demo_solo.csv")
     for index, row in df.iterrows():
         print("--- Generating Record ---")
-        record = generate_obste_note(row)
+        record = generate_obste_note(row.to_dict())
 
     df = pd.read_csv("my_datasets/ehr/obstetrics/raw/demo_multi.csv")
     for index, row in df.iterrows():
         print("--- Generating Record ---")
-        record = generate_obste_note(row)
+        record = generate_obste_note(row.to_dict())
