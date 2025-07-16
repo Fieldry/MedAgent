@@ -8,8 +8,9 @@ from lightning.pytorch.loggers import CSVLogger
 import torch
 
 from pyehr.datasets.utils.datamodule import EhrDataModule
-from pyehr.pipelines import DlPipeline, MlPipeline
+from pyehr.pipelines.dl import DlPipeline
 from pyehr.utils.bootstrap import run_bootstrap
+from pyehr.utils.calibration import find_optimal_threshold
 
 
 def run_dl_experiment(config):
@@ -49,39 +50,32 @@ def run_dl_experiment(config):
     trainer.fit(pipeline, dm)
 
     # Load best model checkpoint
-    best_model_path = checkpoint_callback.best_model_path
+    # best_model_path = checkpoint_callback.best_model_path
+    best_model_path = "logs/esrd/mortality/AdaCare/checkpoints/best.ckpt"
     print("best_model_path:", best_model_path)
     pipeline = DlPipeline.load_from_checkpoint(best_model_path, config=config)
-    trainer.test(pipeline, dm)
+    val_loader = dm.val_dataloader()
 
-    perf = pipeline.test_performance
-    outs = pipeline.test_outputs
-    return config, perf, outs
+    # Calibration
+    # if config["task"] in ["mortality", "readmission", "sptb"]:
+    #     print("Fitting DL classification calibration (temperature scaling)...")
+    #     pipeline.fit_calibration_temperature(val_loader) # pipeline 实例上调用
 
+    # Optimize decision threshold
+    # if config["task"] in ["mortality", "readmission", "sptb"]:
+    #     print("Optimizing decision threshold for DL model...")
+    #     calibrated_probs_val, true_labels_val = pipeline.get_calibrated_probs_and_labels_for_threshold_tuning(val_loader)
 
-def run_ml_experiment(config):
-    # data
-    dataset_path = f'my_datasets/ehr/{config["dataset"]}/processed/fold_{config["fold"]}'
-    dm = EhrDataModule(dataset_path, task=config["task"], batch_size=config["batch_size"])
+    #     if calibrated_probs_val.numel() > 0 and true_labels_val.numel() > 0:
+    #         calibrated_probs_val_np = calibrated_probs_val.cpu().numpy()
+    #         true_labels_val_np = true_labels_val.cpu().numpy()
 
-    # los infomation
-    los_info = pd.read_pickle(os.path.join(dataset_path, 'los_info.pkl'))
-    config["los_info"] = los_info
-
-    # logger
-    logger = CSVLogger(save_dir="logs", name=f'{config["dataset"]}/{config["task"]}', version=f"{config['model']}")
-
-    # main metric
-    main_metric = "auroc" if config["task"] in ["mortality", "readmission"] else "mae"
-    config["main_metric"] = main_metric
-
-    # seed for reproducibility
-    L.seed_everything(42)
-
-    # train/val/test
-    pipeline = MlPipeline(config)
-    trainer = L.Trainer(accelerator="cpu", max_epochs=1, logger=logger, num_sanity_val_steps=0)
-    trainer.fit(pipeline, dm)
+    #         best_threshold, _ = find_optimal_threshold(true_labels_val_np, calibrated_probs_val_np, metric='f1')
+    #         print(f"DL Optimal threshold: {best_threshold:.4f}")
+    #         pipeline.optimal_decision_threshold = best_threshold
+    #     else:
+    #         print("Warning: Not enough data for DL threshold optimization. Using default 0.5.")
+    #         pipeline.optimal_decision_threshold = getattr(pipeline, 'optimal_decision_threshold', 0.5)
 
     trainer.test(pipeline, dm)
 
@@ -154,7 +148,7 @@ if __name__ == "__main__":
         # Add the model name to the configuration
         config["model"] = model
 
-        for fold in range(10):
+        for fold in range(1):
             config["fold"] = fold
 
             # Print the configuration
@@ -164,8 +158,7 @@ if __name__ == "__main__":
 
             # Run the experiment
             try:
-                run_experiment = run_ml_experiment if model in ["CatBoost", "DT", "RF", "XGBoost"] else run_dl_experiment
-                config, perf, outs = run_experiment(config)
+                config, perf, outs = run_dl_experiment(config)
             except Exception as e:
                 print(f"Error occurred while running the experiment for model {model}.")
                 import traceback
