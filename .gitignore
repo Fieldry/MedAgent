@@ -8,6 +8,7 @@ datasets_info.py
 prompt_*.txt
 *.json
 *.ipynb
+*.csv
 
 # ZONE.IDENTIFIER
 *Zone.Identifier
