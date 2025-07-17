@@ -1,6 +1,7 @@
 import os
 import argparse
 
+import numpy as np
 import pandas as pd
 import lightning as L
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
@@ -22,6 +23,7 @@ class MyDataset(Dataset):
         self.ehr_embeddings = data["ehr_embeddings"][:length]
         self.y = data["labels"][:length]
         self.pids = data["pids"][:length]
+        self.ehr_preds = data["ehr_preds"][:length]
 
     def __len__(self):
         return len(self.y)
@@ -29,8 +31,9 @@ class MyDataset(Dataset):
     def __getitem__(self, index):
         ehr_score = self.ehr_scores[index]
         ehr_embedding = self.ehr_embeddings[index]
-        merged_ehr_embedding = torch.tensor([score * embedding for score, embedding in zip(ehr_score, ehr_embedding)])
-        merged_ehr_embedding = merged_ehr_embedding.sum(dim=0) / sum(ehr_score)
+        merged_ehr_embedding = np.array([score * embedding for score, embedding in zip(ehr_score, ehr_embedding)]).sum(axis=0) / sum(ehr_score)
+        merged_ehr_embedding = torch.from_numpy(merged_ehr_embedding)
+
         text_embedding = torch.tensor(self.text_embeddings[index])
         y = self.y[index]
         pid = self.pids[index]
@@ -198,14 +201,14 @@ def run_experiment(config):
 
     perf = pipeline.test_performance
     outs = pipeline.test_outputs
-    return perf, outs
+    return dm, perf, outs
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     # Basic configurations
-    parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name", choices=["tjh", "mimic-iv", "esrd"])
-    parser.add_argument("--task", "-t", type=str, required=True, help="Task name", choices=["mortality", "readmission", "los"])
+    parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name", choices=["tjh", "mimic-iv", "esrd", "obstetrics"])
+    parser.add_argument("--task", "-t", type=str, required=True, help="Task name", choices=["mortality", "readmission", "los", "sptb"])
     parser.add_argument("--method", "-m", type=str, default="ColaCare", help="Method name", choices=["ColaCare"])
     parser.add_argument("--ehr_model_names", "-em", type=str, nargs="+", required=True, help="EHR model names")
     parser.add_argument("--lm_name", "-lm", type=str, required=True, help="Language model name")
@@ -217,7 +220,7 @@ def parse_args():
     parser.add_argument('--learning_rate', '-lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--batch_size', '-bs', type=int, default=128, help='Batch size')
     parser.add_argument('--epochs', '-e', type=int, default=100, help='Number of epochs')
-    parser.add_argument('--patience', '-p', type=int, default=10, help='Patience for early stopping')
+    parser.add_argument('--patience', '-p', type=int, default=30, help='Patience for early stopping')
     parser.add_argument('--output_dim', '-od', type=int, default=1, help='Output dimension')
     parser.add_argument('--seed', '-s', type=int, default=42, help='Seed')
     parser.add_argument('--main_metric', '-mm', type=str, default='auroc', help='Main metric', choices=['auroc', 'auprc'])
@@ -248,6 +251,40 @@ if __name__ == "__main__":
         'main_metric': args.main_metric,
     }
 
-    perf, outs = run_experiment(config)
-    print(perf)
-    print(outs)
+    dm, perf, outs = run_experiment(config)
+    perf_boot = run_bootstrap(outs["y_pred"], outs["y_true"], {"task": args.task, "los_info": None})
+    for key, value in perf_boot.items():
+        if args.task in ["mortality", "readmission", "sptb"]:
+            perf_boot[key] = f'{value["mean"] * 100:.2f}±{value["std"] * 100:.2f}'
+        else:
+            perf_boot[key] = f'{value["mean"]:.2f}±{value["std"]:.2f}'
+
+    perf_boot = dict({
+        "model": args.method,
+        "dataset": args.dataset,
+        "task": args.task,
+    }, **perf_boot)
+    perf_df = pd.DataFrame(perf_boot, index=[0])
+
+    ehr_preds = dm.test_dataset.ehr_preds
+    ehr_preds = np.array(ehr_preds).transpose(1, 0)
+
+    assert ehr_preds.shape[0] == 3
+    assert ehr_preds.shape[1] == len(dm.test_dataset.pids)
+
+    for ehr_pred, ehr_model_name in zip(ehr_preds, args.ehr_model_names):
+        perf_boot = run_bootstrap(ehr_pred, outs["y_true"], {"task": args.task, "los_info": None})
+        for key, value in perf_boot.items():
+            if args.task in ["mortality", "readmission", "sptb"]:
+                perf_boot[key] = f'{value["mean"] * 100:.2f}±{value["std"] * 100:.2f}'
+            else:
+                perf_boot[key] = f'{value["mean"]:.2f}±{value["std"]:.2f}'
+        perf_boot = dict({
+            "model": ehr_model_name,
+            "dataset": args.dataset,
+            "task": args.task,
+        }, **perf_boot)
+        perf_df = pd.concat([pd.DataFrame(perf_boot, index=[0]), perf_df], ignore_index=True)
+
+    perf_df.to_csv(os.path.join("logs", args.dataset, args.task, args.method, "fusion", "performance.csv"), index=False)
+    print(f"Performance saved.")
