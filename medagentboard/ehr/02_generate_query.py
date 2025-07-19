@@ -372,7 +372,7 @@ def main():
         elif modality == "note":
             query = note_context
         elif modality == "mm":
-            query = [ehr_context + note_context for ehr_context in ehr_contexts]
+            query = [note_context + ehr_context for ehr_context in ehr_contexts]
         query_list.append({
             'qid': id,
             'question': query,
