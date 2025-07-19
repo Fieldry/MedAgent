@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib_venn import venn2, venn3
 from lightning.pytorch.loggers import CSVLogger
 import torch
+import seaborn as sns
 
 from pyehr.datasets.utils.datamodule import EhrDataModule
 from pyehr.pipelines.dl import DlPipeline
@@ -166,7 +167,7 @@ if __name__ == "__main__":
     for model in model_names:
         config["model"] = model
 
-        for i in range(6):
+        for i in range(10):
             config["fold"] = i
 
             # Print the configuration
@@ -226,7 +227,10 @@ if __name__ == "__main__":
         perf_df = pd.DataFrame(perf_boot, index=[0])
         perf_all_df = pd.concat([perf_all_df, perf_df], ignore_index=True)
 
-    print(perf_all_df)
+    save_dir = os.path.join("logs", f"{args.dataset}/{args.task}")
+    os.makedirs(save_dir, exist_ok=True)
+    perf_all_df.to_csv(os.path.join(save_dir, "all_folds_performance.csv"), index=False)
+    print(f"All performances saved to {os.path.join(save_dir, 'all_folds_performance.csv')}")
 
     # Plot venn diagram
     plt.figure(figsize=(12, 8))
@@ -263,7 +267,7 @@ if __name__ == "__main__":
         )
 
         venn3(subsets=subsets, set_labels=model_names)
-        title = f'Prediction Agreement among {", ".join(model_names)}'
+        title = f'Prediction Agreement among {", ".join(model_names)} on dataset {dataset} and task {task}'
 
     all_correct_count = np.sum(m1_correct & m2_correct & m3_correct)
     all_incorrect_count = np.sum(~m1_correct & ~m2_correct & (~m3_correct if len(model_names) == 3 else True))
@@ -292,7 +296,36 @@ if __name__ == "__main__":
         transform=plt.gca().transAxes,
         bbox=dict(boxstyle='round,pad=0.5', fc='wheat', alpha=0.5)
     )
-    # plt.show()
-    plt.savefig(os.path.join("logs", f"{args.dataset}/{args.task}/venn_{dataset}_{task}_wocalib.png"))
+    plt.savefig(os.path.join("logs", f"{args.dataset}/{args.task}/venn_{dataset}_{task}.png"))
+
+    plt.clf()
+
+    # Plot heatmap
+    plt.figure(figsize=(15, 6))
+    preds_df = pd.DataFrame(model_preds)
+
+    sort_by_model = model_names[0]
+    sorted_preds_df = preds_df.sort_values(by=sort_by_model, ascending=False)
+    plot_data = sorted_preds_df.T
+
+    sns.heatmap(
+        plot_data,
+        cmap='viridis',
+        xticklabels=False,
+        yticklabels=True,
+        cbar=True,
+        cbar_kws={'label': 'Prediction Value (Probability)'}
+    )
+
+    plt.yticks(rotation=0)
+    title = f'Model Predictions on All Samples ({dataset}/{task})\n(Samples sorted by "{sort_by_model}" predictions)'
+    plt.title(title, fontsize=16)
+    plt.xlabel(f'All {total_samples} Test Samples')
+    plt.ylabel('Models')
+    plt.tight_layout()
+
+    save_path = os.path.join("logs", f"{args.dataset}/{args.task}", f"prediction_values_heatmap_{dataset}_{task}.png")
+    plt.savefig(save_path, dpi=300)
+    print(f"\nPrediction values heatmap saved to {save_path}")
 
     plt.clf()
