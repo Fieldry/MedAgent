@@ -120,7 +120,8 @@ class DoctorAgent(BaseAgent):
         agent_id: str,
         specialty: str,
         model_key: str = "deepseek-v3-official",
-        logger=None):
+        logger=None,
+        use_rag: bool = True):
         """
         Initialize a doctor agent.
 
@@ -129,9 +130,11 @@ class DoctorAgent(BaseAgent):
             specialty: Doctor's clinical specialty (string)
             model_key: LLM model to use
             logger: Logger object for logging
+            use_rag: Whether to use RAG for the doctor agent
         """
         super().__init__(agent_id, AgentType.DOCTOR, model_key, logger=logger)
         self.specialty = specialty
+        self.use_rag = use_rag
         if self.logger:
             self.logger.info(f"Initializing doctor agent, ID: {agent_id}, Specialty: {specialty}, Model: {model_key}")
 
@@ -193,16 +196,20 @@ class DoctorAgent(BaseAgent):
         else:
             task_hint = ""
 
-        # Step 1: Generate RAG query
-        rag_query = self._generate_rag_query(question, task_type)
+        if self.use_rag:
+            # Step 1: Generate RAG query
+            rag_query = self._generate_rag_query(question, task_type)
 
-        # Step 2: Call the simulated RAG tool with the generated query
-        retrieved_literature = "Retrieved literature:\n"
-        for i, query in enumerate(rag_query):
-            retrieved_literature += await litsense_api_call(query=query, order=i, max_results=10) + "\n"
+            # Step 2: Call the simulated RAG tool with the generated query
+            retrieved_literature = "Retrieved literature:\n"
+            for i, query in enumerate(rag_query):
+                retrieved_literature += await litsense_api_call(query=query, order=i, max_results=10) + "\n"
 
-        if self.logger:
-            self.logger.info(f"Doctor {self.agent_id} retrieved literature (first 200 chars): {retrieved_literature[:200]}...")
+            if self.logger:
+                self.logger.info(f"Doctor {self.agent_id} retrieved literature (first 200 chars): {retrieved_literature[:200]}...")
+        else:
+            rag_query = ""
+            retrieved_literature = ""
 
         system_message = {
             "role": "system",
@@ -796,7 +803,8 @@ class MDTConsultation:
         doctor_configs: List[Dict] = None,
         meta_model_key: str = "deepseek-v3-official",
         evaluator_model_key: str = "deepseek-v3-official",
-        logger=None
+        logger=None,
+        use_rag: bool = True
     ):
         """
         Initialize MDT consultation.
@@ -807,6 +815,7 @@ class MDTConsultation:
             meta_model_key: LLM model for meta agent
             evaluator_model_key: LLM model for evaluator agent
             logger: Logger object for logging consultation process
+            use_rag: Whether to use RAG for the doctor agents
         """
         self.max_rounds = max_rounds
         self.doctor_configs = doctor_configs or [
@@ -818,6 +827,7 @@ class MDTConsultation:
         self.meta_model_key = meta_model_key
         self.evaluator_model_key = evaluator_model_key
         self.logger = logger
+        self.use_rag = use_rag
 
         # Initialize doctor agents with different specialties and models
         self.doctor_agents: List[DoctorAgent] = []
@@ -826,7 +836,7 @@ class MDTConsultation:
             agent_id = f"doctor_{idx}"
             model_key = config.get("model_key", "deepseek-v3-official")
             specialty = config.get("specialty", "General Medicine")
-            doctor_agent = DoctorAgent(agent_id, specialty, model_key, logger=logger)
+            doctor_agent = DoctorAgent(agent_id, specialty, model_key, logger=logger, use_rag=use_rag)
             self.doctor_agents.append(doctor_agent)
             self.doctor_specialties_for_logging.append(specialty)
 
@@ -1163,14 +1173,12 @@ async def main():
     parser = argparse.ArgumentParser(description="Run MDT consultation on EHR datasets")
     parser.add_argument("--dataset", "-d", type=str, required=True, choices=["mimic-iv", "tjh", "esrd", "obstetrics"], help="Specify dataset name: mimic-iv or tjh or esrd")
     parser.add_argument("--task", "-t", type=str, required=True, choices=["mortality", "readmission", "sptb"], help="Prediction task: mortality or readmission or sptb")
-    parser.add_argument("--modality", "-mo", type=str, default="ehr", choices=["ehr", "note", "mm"],
-                       help="Modality of the dataset: ehr or note or mm")
-    parser.add_argument("--meta_model", type=str, default="deepseek-v3-official",
-                       help="Model used for meta agent")
+    parser.add_argument("--modality", "-mo", type=str, default="ehr", choices=["ehr", "note", "mm"], help="Modality of the dataset: ehr or note or mm")
+    parser.add_argument("--meta_model", type=str, default="deepseek-v3-official", help="Model used for meta agent")
     parser.add_argument("--doctor_models", nargs='+', default=["deepseek-v3-official", "deepseek-v3-official", "deepseek-v3-official"],
-                       help="Models used for doctor agents. Provide one model name per doctor.")
-    parser.add_argument("--evaluate_model", type=str, default="deepseek-v3-official",
-                       help="Model used for evaluator agent")
+                        help="Models used for doctor agents. Provide one model name per doctor.")
+    parser.add_argument("--evaluate_model", type=str, default="deepseek-v3-official", help="Model used for evaluator agent")
+    parser.add_argument("--use_rag", action="store_true", default=True, help="Whether to use RAG for the doctor agents")
     args = parser.parse_args()
 
     method = "ColaCare" # ColaCare by default
@@ -1217,11 +1225,6 @@ async def main():
     # Create doctor configurations, assigning the determined specialty
     doctor_configs = []
 
-    if len(args.doctor_models) > 3:
-        print(f"Warning: More doctor models ({len(args.doctor_models)}) provided than typical (3)."
-            f"All provided models will be used, each assigned the dataset specialty.")
-        pass
-
     for model in args.doctor_models:
         doctor_configs.append({
             "model_key": model,
@@ -1242,8 +1245,10 @@ async def main():
         # Truncate the question for note modality
         question = question[:500] if modality == "note" else question
 
+        save_file_name = f"ehr_{qid_str}-result.json" if args.use_rag else f"ehr_{qid_str}-worag-result.json"
+
         # Skip if already processed
-        if os.path.exists(os.path.join(results_dir, f"ehr_{qid_str}-result.json")):
+        if os.path.exists(os.path.join(results_dir, save_file_name)):
             print(f"Skipping {qid_str} - already processed")
             continue
 
@@ -1261,6 +1266,7 @@ async def main():
                 meta_model_key=args.meta_model,
                 evaluator_model_key=args.evaluate_model,
                 logger=logger,
+                use_rag=args.use_rag
             )
 
             # Run consultation
@@ -1286,13 +1292,13 @@ async def main():
             }
 
             # Save individual result
-            save_json(item_result, os.path.join(results_dir, f"ehr_{qid_str}-result.json"))
+            save_json(item_result, os.path.join(results_dir, save_file_name))
 
         except Exception as e:
             if logger:
                 logger.error(f"Error processing item {qid}: {e}")
             # Optionally, save an error log for the QID
-            error_log_path = os.path.join(error_dir, f"ehr_{qid_str}-error.log")
+            error_log_path = os.path.join(error_dir, f"ehr_{qid_str}-error.log") if args.use_rag else os.path.join(error_dir, f"ehr_{qid_str}-worag-error.log")
             with open(error_log_path, "w") as f:
                 f.write(f"Error processing {qid}: {e}\n")
                 import traceback
