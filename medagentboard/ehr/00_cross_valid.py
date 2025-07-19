@@ -8,9 +8,8 @@ from lightning.pytorch.loggers import CSVLogger
 import torch
 
 from pyehr.datasets.utils.datamodule import EhrDataModule
-from pyehr.pipelines.dl import DlPipeline
+from pyehr.pipelines.dl_pipeline import DlPipeline
 from pyehr.utils.bootstrap import run_bootstrap
-from pyehr.utils.calibration import find_optimal_threshold
 
 
 def run_dl_experiment(config):
@@ -50,33 +49,9 @@ def run_dl_experiment(config):
     trainer.fit(pipeline, dm)
 
     # Load best model checkpoint
-    # best_model_path = checkpoint_callback.best_model_path
-    best_model_path = "logs/esrd/mortality/AdaCare/checkpoints/best.ckpt"
+    best_model_path = checkpoint_callback.best_model_path
     print("best_model_path:", best_model_path)
     pipeline = DlPipeline.load_from_checkpoint(best_model_path, config=config)
-    val_loader = dm.val_dataloader()
-
-    # Calibration
-    # if config["task"] in ["mortality", "readmission", "sptb"]:
-    #     print("Fitting DL classification calibration (temperature scaling)...")
-    #     pipeline.fit_calibration_temperature(val_loader) # pipeline 实例上调用
-
-    # Optimize decision threshold
-    # if config["task"] in ["mortality", "readmission", "sptb"]:
-    #     print("Optimizing decision threshold for DL model...")
-    #     calibrated_probs_val, true_labels_val = pipeline.get_calibrated_probs_and_labels_for_threshold_tuning(val_loader)
-
-    #     if calibrated_probs_val.numel() > 0 and true_labels_val.numel() > 0:
-    #         calibrated_probs_val_np = calibrated_probs_val.cpu().numpy()
-    #         true_labels_val_np = true_labels_val.cpu().numpy()
-
-    #         best_threshold, _ = find_optimal_threshold(true_labels_val_np, calibrated_probs_val_np, metric='f1')
-    #         print(f"DL Optimal threshold: {best_threshold:.4f}")
-    #         pipeline.optimal_decision_threshold = best_threshold
-    #     else:
-    #         print("Warning: Not enough data for DL threshold optimization. Using default 0.5.")
-    #         pipeline.optimal_decision_threshold = getattr(pipeline, 'optimal_decision_threshold', 0.5)
-
     trainer.test(pipeline, dm)
 
     perf = pipeline.test_performance
@@ -148,7 +123,7 @@ if __name__ == "__main__":
         # Add the model name to the configuration
         config["model"] = model
 
-        for fold in range(1):
+        for fold in range(10):
             config["fold"] = fold
 
             # Print the configuration
@@ -194,8 +169,8 @@ if __name__ == "__main__":
 
     # Save all performance
     try:
-        perf_all_df.to_csv(os.path.join(args.output_root, f"{args.dataset}/{args.task}/all_performance.csv"), index=False)
-        print(f"All performances saved to {os.path.join(args.output_root, f'{args.dataset}/{args.task}/all_performance.csv')}")
+        perf_all_df.to_csv(os.path.join(args.output_root, f"{args.dataset}/{args.task}/cross_valid_performance.csv"), index=False)
+        print(f"All performances saved to {os.path.join(args.output_root, f'{args.dataset}/{args.task}/cross_valid_performance.csv')}")
     except Exception as e:
         print(e)
     print("All experiments completed.")
