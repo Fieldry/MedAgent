@@ -13,6 +13,7 @@ from torch.utils.data import Dataset, DataLoader
 from pyehr.utils.metrics import get_binary_metrics, check_metric_is_better
 from pyehr.utils.bootstrap import run_bootstrap
 
+
 class MyDataset(Dataset):
     def __init__(self, data_path, mode="train"):
         super().__init__()
@@ -29,15 +30,12 @@ class MyDataset(Dataset):
         return len(self.y)
 
     def __getitem__(self, index):
-        ehr_score = self.ehr_scores[index]
-        ehr_embedding = self.ehr_embeddings[index]
-        merged_ehr_embedding = np.array([score * embedding for score, embedding in zip(ehr_score, ehr_embedding)]).sum(axis=0) / sum(ehr_score)
-        merged_ehr_embedding = torch.from_numpy(merged_ehr_embedding)
-
-        text_embedding = torch.tensor(self.text_embeddings[index])
+        ehr_embeddings = torch.tensor(self.ehr_embeddings[index], dtype=torch.float32)
+        text_embedding = torch.tensor(self.text_embeddings[index], dtype=torch.float32)
         y = self.y[index]
         pid = self.pids[index]
-        return merged_ehr_embedding, text_embedding, y, pid
+        ehr_score = torch.tensor(self.ehr_scores[index], dtype=torch.float32)
+        return ehr_embeddings, text_embedding, y, pid, ehr_score
 
 
 class MyDataModule(L.LightningDataModule):
@@ -45,8 +43,8 @@ class MyDataModule(L.LightningDataModule):
         super().__init__()
         self.batch_size = batch_size
         self.train_dataset = MyDataset(data_path, mode="train")
-        self.val_dataset = MyDataset(data_path, mode='val')
-        self.test_dataset = MyDataset(data_path, mode='test')
+        self.val_dataset = MyDataset(data_path, mode="val")
+        self.test_dataset = MyDataset(data_path, mode="test")
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
@@ -58,54 +56,161 @@ class MyDataModule(L.LightningDataModule):
         return DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
 
 
-class FusionModel(nn.Module):
-    def __init__(self, ehr_embed_dim, text_embed_dim, merge_embed_dim, output_dim):
+class AttentionFusionLayer(nn.Module):
+    """
+    使用注意力机制动态融合多个EHR模型的隐层表示.
+    Query: text_embedding (LLM报告的嵌入)
+    Keys/Values: ehr_embeddings_list (多个小模型的嵌入)
+    """
+    def __init__(self, embed_dim, num_heads=4):
         super().__init__()
-        self.ehr_embed_dim = ehr_embed_dim
-        self.text_embed_dim = text_embed_dim
-        self.merge_embed_dim = merge_embed_dim
-        self.output_dim = output_dim
+        self.embed_dim = embed_dim
+        self.attention = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, batch_first=True)
 
-        self.ehr_embed = nn.Linear(ehr_embed_dim, merge_embed_dim)
-        self.text_embed = nn.Linear(text_embed_dim, merge_embed_dim)
+    def forward(self, text_embedding, ehr_embeddings_list):
+        """
+        Args:
+            text_embedding (torch.Tensor): LLM报告嵌入, shape (batch_size, embed_dim)
+            ehr_embeddings_list (torch.Tensor): 多个EHR模型嵌入, shape (batch_size, num_models, embed_dim)
+        Returns:
+            torch.Tensor: 融合后的EHR嵌入, shape (batch_size, embed_dim)
+        """
+        # MultiheadAttention期望的输入是 (batch, seq_len, embed_dim)
+        # Query需要扩展一个维度: (batch, 1, embed_dim)
+        query = text_embedding.unsqueeze(1)
+        # Keys和Values就是我们的EHR嵌入列表
+        keys = ehr_embeddings_list
+        values = ehr_embeddings_list
+
+        print("Query shape:", query.shape)
+        print("Keys shape:", keys.shape)
+        print("Values shape:", values.shape)
+
+        # attn_output shape: (batch_size, 1, embed_dim)
+        # attn_weights shape: (batch_size, 1, num_models) -> 我们可以用这个来做可视化分析！
+        attn_output, attn_weights = self.attention(query, keys, values)
+
+        # fused_ehr_embedding shape: (batch_size, embed_dim)
+        fused_ehr_embedding = attn_output.squeeze(1)
+
+        return fused_ehr_embedding
+
+
+class AttentionFusionModel(nn.Module):
+    def __init__(self, ehr_embed_dim, text_embed_dim, merge_embed_dim, output_dim, num_models=3):
+        super().__init__()
+        self.embed_dim = merge_embed_dim
+
+        self.ehr_proj = nn.Linear(ehr_embed_dim, merge_embed_dim)
+
+        self.attention_fusion = AttentionFusionLayer(embed_dim=self.embed_dim)
+
         self.merge_embed = nn.Sequential(
-            nn.Linear(merge_embed_dim * 2, merge_embed_dim),
+            nn.Linear(self.embed_dim * 2, self.embed_dim),
             nn.GELU(),
-            nn.Linear(merge_embed_dim, merge_embed_dim),
+            nn.Linear(self.embed_dim, self.embed_dim),
             nn.GELU(),
         )
 
-    def forward(self, ehr, text):
-        ehr_embed = self.ehr_embed(ehr.to(torch.float32))
-        text_embed = self.text_embed(text.to(torch.float32))
-        merge_embed = self.merge_embed(torch.cat([ehr_embed, text_embed], dim=-1))
+    def forward(self, ehr_list, text):
+        # ehr_list shape: (batch, num_models, ehr_embed_dim)
+        # text shape: (batch, embed_dim)
+
+        ehr_list = self.ehr_proj(ehr_list)
+        print(ehr_list.shape)
+        # ehr_list shape: (batch, num_models, merge_embed_dim)
+
+        # 1. 动态融合EHR嵌入
+        fused_ehr_embedding = self.attention_fusion(text, ehr_list)
+
+        # 2. 拼接融合后的EHR嵌入和文本嵌入
+        merge_input = torch.cat([fused_ehr_embedding, text], dim=-1)
+
+        # 3. 通过MLP进行最终的特征提取
+        merge_embed = self.merge_embed(merge_input)
+        return merge_embed
+
+
+class ConcatFusionModel(nn.Module):
+    def __init__(self, ehr_embed_dim, text_embed_dim, merge_embed_dim, output_dim, score=False, num_models=3):
+        super().__init__()
+        self.embed_dim = merge_embed_dim
+        self.score = score
+
+        self.ehr_proj = nn.Linear(ehr_embed_dim, merge_embed_dim)
+
+        self.merge_embed = nn.Sequential(
+            nn.Linear(self.embed_dim * 2, self.embed_dim),
+            nn.GELU(),
+            nn.Linear(self.embed_dim, self.embed_dim),
+            nn.GELU(),
+        )
+
+    def forward(self, ehr_list, text, ehr_scores=None):
+        # ehr_list shape: (batch, num_models, ehr_embed_dim)
+        # ehr_scores shape: (batch, num_models)
+        if self.score and ehr_scores is not None:
+            ehr_list = ehr_list * ehr_scores.unsqueeze(-1)
+            ehr_list = self.ehr_proj(ehr_list).mean(dim=1) # (batch, merge_embed_dim)
+        else:
+            ehr_list = self.ehr_proj(ehr_list).mean(dim=1) # (batch, merge_embed_dim)
+
+        merge_input = torch.cat([ehr_list, text], dim=-1)
+        merge_embed = self.merge_embed(merge_input)
         return merge_embed
 
 
 class Pipeline(L.LightningModule):
     def __init__(self, config):
         super().__init__()
-        self.learning_rate = config["learning_rate"]
-        self.main_metric = config["main_metric"]
-        self.output_dim = config["output_dim"]
-        self.task = config["task"]
-        self.model = FusionModel(ehr_embed_dim=config["ehr_embed_dim"], text_embed_dim=config["text_embed_dim"], merge_embed_dim=config["merge_embed_dim"], output_dim=self.output_dim)
+        self.save_hyperparameters(config) # 保存配置，方便加载
+        self.learning_rate = self.hparams.learning_rate
+        self.main_metric = self.hparams.main_metric
+        self.output_dim = self.hparams.output_dim
+        self.fusion_method = self.hparams.fusion_method
+
+        if self.fusion_method == "attention":
+            self.model = AttentionFusionModel(
+                ehr_embed_dim=self.hparams.ehr_embed_dim,
+                text_embed_dim=self.hparams.text_embed_dim,
+                merge_embed_dim=self.hparams.merge_embed_dim,
+                output_dim=self.output_dim
+            )
+        elif self.fusion_method == "concat":
+            self.model = ConcatFusionModel(
+                ehr_embed_dim=self.hparams.ehr_embed_dim,
+                text_embed_dim=self.hparams.text_embed_dim,
+                merge_embed_dim=self.hparams.merge_embed_dim,
+                output_dim=self.output_dim
+            )
+        elif self.fusion_method == "score":
+            self.model = ConcatFusionModel(
+                ehr_embed_dim=self.hparams.ehr_embed_dim,
+                text_embed_dim=self.hparams.text_embed_dim,
+                merge_embed_dim=self.hparams.merge_embed_dim,
+                output_dim=self.output_dim,
+                score=True
+            )
+
         self.head = nn.Sequential(
-            nn.Linear(config["merge_embed_dim"], self.output_dim),
+            nn.Linear(self.hparams.merge_embed_dim, self.output_dim),
             nn.Dropout(0.0),
             nn.Sigmoid()
         )
         self.loss_fn = nn.BCELoss()
 
-        self.cur_best_performance = {}  # val set
-        self.test_performance = {}  # test set
+        self.cur_best_performance = {}
+        self.test_performance = {}
         self.validation_step_outputs = []
         self.test_step_outputs = []
         self.test_outputs = {}
 
     def forward(self, batch):
-        merged_ehr_embedding, text_embedding, _, _ = batch
-        y_hat = self.model(merged_ehr_embedding, text_embedding).to(merged_ehr_embedding.device)
+        ehr_embeddings_list, text_embedding, _, _, ehr_score = batch
+        if self.fusion_method == "score":
+            y_hat = self.model(ehr_embeddings_list, text_embedding, ehr_score)
+        else:
+            y_hat = self.model(ehr_embeddings_list, text_embedding)
         y_hat = self.head(y_hat).squeeze(-1)
         return y_hat
 
@@ -140,7 +245,7 @@ class Pipeline(L.LightningModule):
             self.log(k, v)
 
         main_score = metrics[self.main_metric]
-        if check_metric_is_better(self.cur_best_performance, self.main_metric, main_score, self.task):
+        if check_metric_is_better(self.cur_best_performance, self.main_metric, main_score, self.hparams.task):
             self.cur_best_performance = metrics
             for k, v in metrics.items(): self.log("best_"+k, v)
         self.validation_step_outputs.clear()
@@ -176,28 +281,29 @@ class Pipeline(L.LightningModule):
 
 def run_experiment(config):
     # data
-    data_path = os.path.join("logs", config["dataset"], config["task"], config["method"])
+    data_path = os.path.join("logs", config["dataset"], config["task"], config["method"], config["modality"])
     dm = MyDataModule(batch_size=config["batch_size"], data_path=data_path)
 
     # logger
-    logger = CSVLogger(save_dir="logs", name=f"{config['dataset']}/{config['task']}/{config['method']}/fusion/{'-'.join(config['ehr_model_names'])}_{config['lm_name']}", flush_logs_every_n_steps=1)
+    log_name = f"{config['dataset']}/{config['task']}/{config['method']}/{config['modality']}/attention_fusion/{'-'.join(config['ehr_model_names'])}_{config['lm_name']}"
+    logger = CSVLogger(save_dir="logs", name=log_name, flush_logs_every_n_steps=1)
 
-    # EarlyStop and checkpoint callback
+    # Callbacks
     early_stopping_callback = EarlyStopping(monitor="auroc", patience=config["patience"], mode="max")
     checkpoint_callback = ModelCheckpoint(filename="best", monitor="auroc", mode="max")
 
-    L.seed_everything(42)  # seed for reproducibility
+    L.seed_everything(config['seed'])
 
     # train/val/test
     pipeline = Pipeline(config)
     trainer = L.Trainer(accelerator="cpu", devices=1, max_epochs=config["epochs"], logger=logger, callbacks=[early_stopping_callback, checkpoint_callback])
     trainer.fit(pipeline, dm)
 
-    # Load best model checkpoint
+    # Load best model and test
     best_model_path = checkpoint_callback.best_model_path
     print("best_model_path:", best_model_path)
-    pipeline = Pipeline.load_from_checkpoint(best_model_path, config=config)
-    trainer.test(pipeline, dm)
+    pipeline = Pipeline.load_from_checkpoint(best_model_path)
+    trainer.test(pipeline, datamodule=dm)
 
     perf = pipeline.test_performance
     outs = pipeline.test_outputs
@@ -206,17 +312,16 @@ def run_experiment(config):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    # Basic configurations
     parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name", choices=["tjh", "mimic-iv", "esrd", "obstetrics"])
     parser.add_argument("--task", "-t", type=str, required=True, help="Task name", choices=["mortality", "readmission", "los", "sptb"])
     parser.add_argument("--method", "-m", type=str, default="ColaCare", help="Method name", choices=["ColaCare"])
     parser.add_argument("--ehr_model_names", "-em", type=str, nargs="+", required=True, help="EHR model names")
     parser.add_argument("--lm_name", "-lm", type=str, required=True, help="Language model name")
+    parser.add_argument("--modality", "-md", type=str, help="Modality", default="ehr", choices=["ehr", "mm"])
 
-    # Model and training hyperparameters
     parser.add_argument('--ehr_embed_dim', '-ehd', type=int, default=128, help='EHR embedding dimension')
     parser.add_argument('--text_embed_dim', '-thd', type=int, default=1024, help='Text embedding dimension')
-    parser.add_argument('--merge_embed_dim', '-mhd', type=int, default=1024, help='Merged embedding dimension')
+    parser.add_argument('--merge_embed_dim', '-mhd', type=int, default=1024, help='The unified embedding dimension for all inputs and fusion model')
     parser.add_argument('--learning_rate', '-lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--batch_size', '-bs', type=int, default=128, help='Batch size')
     parser.add_argument('--epochs', '-e', type=int, default=100, help='Number of epochs')
@@ -229,47 +334,33 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    # Parse command line arguments
     args = parse_args()
+    config = vars(args)
 
-    # Set up the configuration dictionary
-    config = {
-        'dataset': args.dataset,
-        'task': args.task,
-        'method': args.method,
-        'ehr_model_names': args.ehr_model_names,
-        'lm_name': args.lm_name,
-        'ehr_embed_dim': args.ehr_embed_dim,
-        'text_embed_dim': args.text_embed_dim,
-        'merge_embed_dim': args.merge_embed_dim,
-        'learning_rate': args.learning_rate,
-        'batch_size': args.batch_size,
-        'epochs': args.epochs,
-        'patience': args.patience,
-        'output_dim': args.output_dim,
-        'seed': args.seed,
-        'main_metric': args.main_metric,
-    }
+    all_perf_df = pd.DataFrame()
+    for fusion_method in ["score", "concat", "attention"]:
+        config["fusion_method"] = fusion_method
+        dm, perf, outs = run_experiment(config)
 
-    dm, perf, outs = run_experiment(config)
-    perf_boot = run_bootstrap(outs["y_pred"], outs["y_true"], {"task": args.task, "los_info": None})
-    for key, value in perf_boot.items():
-        if args.task in ["mortality", "readmission", "sptb"]:
-            perf_boot[key] = f'{value["mean"] * 100:.2f}±{value["std"] * 100:.2f}'
-        else:
-            perf_boot[key] = f'{value["mean"]:.2f}±{value["std"]:.2f}'
+        perf_boot = run_bootstrap(outs["y_pred"], outs["y_true"], {"task": args.task, "los_info": None})
+        for key, value in perf_boot.items():
+            if args.task in ["mortality", "readmission", "sptb"]:
+                perf_boot[key] = f'{value["mean"] * 100:.2f}±{value["std"] * 100:.2f}'
+            else:
+                perf_boot[key] = f'{value["mean"]:.2f}±{value["std"]:.2f}'
 
-    perf_boot = dict({
-        "model": args.method,
-        "dataset": args.dataset,
-        "task": args.task,
-    }, **perf_boot)
-    perf_df = pd.DataFrame(perf_boot, index=[0])
+        perf_boot = dict({
+            "model": args.method + "_" + fusion_method,
+            "dataset": args.dataset,
+            "task": args.task,
+        }, **perf_boot)
+        perf_df = pd.DataFrame(perf_boot, index=[0])
+        all_perf_df = pd.concat([all_perf_df, perf_df], ignore_index=True)
 
     ehr_preds = dm.test_dataset.ehr_preds
     ehr_preds = np.array(ehr_preds).transpose(1, 0)
 
-    assert ehr_preds.shape[0] == 3
+    assert ehr_preds.shape[0] == len(args.ehr_model_names)
     assert ehr_preds.shape[1] == len(dm.test_dataset.pids)
 
     for ehr_pred, ehr_model_name in zip(ehr_preds, args.ehr_model_names):
@@ -286,5 +377,7 @@ if __name__ == "__main__":
         }, **perf_boot)
         perf_df = pd.concat([pd.DataFrame(perf_boot, index=[0]), perf_df], ignore_index=True)
 
-    perf_df.to_csv(os.path.join("logs", args.dataset, args.task, args.method, "fusion", "performance.csv"), index=False)
-    print(f"Performance saved.")
+    log_dir = os.path.join("logs", args.dataset, args.task, args.method, args.modality, "attention_fusion")
+    os.makedirs(log_dir, exist_ok=True)
+    perf_df.to_csv(os.path.join(log_dir, "performance.csv"), index=False)
+    print(f"Performance saved to {log_dir}/performance.csv")
