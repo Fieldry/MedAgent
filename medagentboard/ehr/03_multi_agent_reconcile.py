@@ -20,6 +20,7 @@ from tqdm import tqdm
 # Import utilities
 from medagentboard.utils.llm_configs import LLM_MODELS_SETTINGS
 from medagentboard.utils.json_utils import load_json, save_json, preprocess_response_string
+from medagentboard.utils import prompt_template
 
 
 ###############################################################################
@@ -444,12 +445,12 @@ class ReconcileCoordinator:
 
         return weighted_sum / total_weight
 
-    def run_discussion(self, question: str) -> Dict[str, Any]:
+    def run_discussion(self, question: List[str]) -> Dict[str, Any]:
         """
         Run the complete discussion process for an EHR prediction task.
 
         Args:
-            question: The input question containing EHR data
+            question: The input question containing EHR data, formatted as a list of questions
 
         Returns:
             Dictionary with the final team prediction and discussion history
@@ -463,8 +464,8 @@ class ReconcileCoordinator:
         print("Phase 1: Generating initial predictions")
         current_predictions = []
 
-        for agent in self.agents:
-            resp = agent.generate_initial_response(question)
+        for i, agent in enumerate(self.agents):
+            resp = agent.generate_initial_response(question[i])
             current_predictions.append(resp)
 
             # Add to discussion history
@@ -489,8 +490,8 @@ class ReconcileCoordinator:
 
             # Each agent generates a new response
             new_predictions = []
-            for agent in self.agents:
-                resp = agent.generate_discussion_response(question, discussion_prompt)
+            for i, agent in enumerate(self.agents):
+                resp = agent.generate_discussion_response(question[i], discussion_prompt)
                 new_predictions.append(resp)
 
                 # Add to discussion history
@@ -541,6 +542,177 @@ class ReconcileCoordinator:
         }
 
 
+class EvaluateAgent(ReconcileAgent):
+    """Evaluator Agent:
+    Evaluate the quality of the final patient report based on Factuality, Safety, and Explainability, using an LLM-as-a-judger approach.
+    Scores are on a scale of 1 to 5."""
+    def __init__(self, agent_id: str, model_key: str = "deepseek-v3-official"):
+        super().__init__(agent_id, model_key)
+
+    def evaluate_preliminary_report(self, doctor_report: Dict[str, Any], final_report: Dict[str, Any], question: str, task_type: str) -> Dict[str, Any]:
+        """
+        Evaluate the quality of each DoctorAgent's preliminary report and its similarity to the final report, returning a score between 0 and 10.
+        """
+        system_message = {
+            "role": "system",
+            "content": f"{prompt_template.EVALUATE_SYSTEM}"
+        }
+        user_message = {
+            "role": "user",
+            "content": f"{prompt_template.EVALUATE_USER.format(question_short=question, doctor_explanation=doctor_report.get('explanation', ''), doctor_prediction=doctor_report.get('prediction', ''), final_explanation=final_report.get('explanation', ''), final_prediction=final_report.get('prediction', ''), task_type=task_type)}"
+        }
+        # Call LLM with retry mechanism
+        response_text = self.call_llm(system_message, user_message)
+
+        # Parse response
+        try:
+            result = json.loads(preprocess_response_string(response_text))
+            # Ensure score is a float between 0 and 10
+            if "score" in result:
+                try:
+                    score = float(result["score"])
+                    result["score"] = max(0.0, min(10.0, score))
+                except Exception:
+                    result["score"] = 0.0
+            else:
+                result["score"] = 0.0
+
+            result["system_message"] = system_message["content"]
+            result["user_message"] = user_message["content"]
+
+            # Add to memory
+            self.memory.append({
+                "type": "evaluation",
+                "content": result
+            })
+            return result
+        except json.JSONDecodeError:
+            lines = response_text.strip().split('\n')
+            result = {}
+
+            for line in lines:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    key = key.strip().lower().replace("\"", "")
+                    value = value.strip()
+                    result[key] = value
+
+            if "score" not in result:
+                result["score"] = 0.0
+            if "reason" not in result:
+                result["reason"] = ""
+
+            result["response_text"] = response_text
+            return result
+
+    def evaluate_final_report(self,
+        original_question: str,
+        final_report_str: str,
+        final_report_explanation: str,
+        final_report_prediction: float,
+        task_type: str,
+        label: str) -> Dict[str, Any]:
+        """
+        Evaluate the AI-generated final patient report for trustworthiness dimensions.
+
+        Args:
+            original_question: The complete original input (EHR data + initial model predictions).
+            final_report_str: The final generated report.
+            final_report_explanation: The 'explanation' part of the final generated report.
+            final_report_prediction: The 'prediction' part of the final generated report.
+            task_type: Type of task (mortality, readmission or sptb).
+            label: True label of the patient under the task.
+
+        Returns:
+            Dictionary containing evaluation scores and reasons for Factuality, Safety,
+            and Explainability, plus an overall comment.
+        """
+        system_message = {
+            "role": "system",
+            "content": prompt_template.REPORT_EVALUATOR_SYSTEM
+        }
+        user_message = {
+            "role": "user",
+            "content": prompt_template.REPORT_EVALUATOR_USER.format(
+                original_question=original_question,
+                final_report=final_report_str,
+                final_explanation=final_report_explanation,
+                final_prediction=final_report_prediction,
+                task_type=task_type,
+                true_label=label
+            )
+        }
+
+        response_text = self.call_llm(system_message, user_message)
+
+        try:
+            # First attempt to parse as clean JSON
+            result = json.loads(preprocess_response_string(response_text))
+
+            # Validate and normalize scores (ensure between 1 and 5)
+            for dim in ["accuracy", "explainability", "safety"]:
+                if dim in result and "score" in result[dim]:
+                    try:
+                        score = int(result[dim]["score"])
+                        result[dim]["score"] = max(1, min(5, score))
+                    except (ValueError, TypeError):
+                        result[dim]["score"] = 1 # Default to lowest if parsing fails
+                else:
+                    result[dim] = {"score": 1, "reason": "Missing or invalid score"}
+
+        except json.JSONDecodeError:
+            result = parse_structured_output_for_final_report(response_text)
+        except Exception as e:
+            result = {
+                "accuracy": {"score": 1, "reason": f"Parsing error: {e}"},
+                "explainability": {"score": 1, "reason": f"Parsing error: {e}"},
+                "safety": {"score": 1, "reason": f"Parsing error: {e}"}
+            }
+        result["system_message"] = system_message["content"]
+        result["user_message"] = user_message["content"]
+        result["response_text"] = response_text
+        return result
+
+
+def parse_structured_output_for_final_report(response_text: str) -> Dict[str, Any]:
+    """
+    Fallback parser for evaluation agent's response, extracting scores and reasons.
+    This is a simplified example; a more robust parser might be needed based on actual LLM output.
+    """
+    result = {
+        "accuracy": {"score": 1, "reason": "Could not parse reason."},
+        "safety": {"score": 1, "reason": "Could not parse reason."},
+        "explainability": {"score": 1, "reason": "Could not parse reason."},
+    }
+
+    # Simple regex-like extraction (not perfect for complex cases)
+    lines = response_text.split('\n')
+    current_dim = None
+
+    for line in lines:
+        line = line.strip()
+        if "accuracy:" in line.lower():
+            current_dim = "accuracy"
+        elif "safety:" in line.lower():
+            current_dim = "safety"
+        elif "explainability:" in line.lower():
+            current_dim = "explainability"
+
+        if current_dim:
+            if "score:" in line.lower():
+                try:
+                    score_str = line.split("score:", 1)[1].strip().split(" ")[0] # Get first number
+                    score = int(float(score_str)) # Handle floats like 4.0
+                    result[current_dim]["score"] = max(1, min(5, score))
+                except ValueError:
+                    pass
+            if "reason:" in line.lower():
+                reason = line.split("reason:", 1)[1].strip()
+                result[current_dim]["reason"] = reason
+
+    return result
+
+
 ###############################################################################
 # Process a Single EHR Item with the Reconcile Framework
 ###############################################################################
@@ -576,7 +748,7 @@ def process_item(item: Dict[str, Any],
     # Compile results
     result = {
         "qid": qid,
-        "question": question,
+        "question": question[-1],
         "ground_truth": ground_truth,
         "predicted_value": discussion_result["final_prediction"],
         "case_history": discussion_result,
@@ -595,10 +767,9 @@ def main():
     Main entry point for running the Reconcile framework on EHR datasets.
     """
     parser = argparse.ArgumentParser(description="Run the Reconcile framework on EHR predictive modeling tasks")
-    parser.add_argument("--dataset", type=str, choices=["mimic-iv", "tjh"], required=True, help="Dataset name")
-    parser.add_argument("--task", type=str, choices=["mortality", "readmission"], required=True, help="Prediction task")
-    parser.add_argument("--agents", nargs='+', default=["qwen-max-latest", "deepseek-v3-official", "qwen-vl-max"],
-                       help="List of agent model keys (e.g., deepseek-v3-official, qwen-max-latest, qwen-vl-max)")
+    parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name")
+    parser.add_argument("--task", "-t", type=str, required=True, help="Prediction task")
+    parser.add_argument("--agents", nargs='+', default=["deepseek-v3-official", "deepseek-v3-official", "deepseek-v3-official"], help="List of agent model keys")
     parser.add_argument("--max_rounds", type=int, default=2, help="Maximum number of discussion rounds")
 
     args = parser.parse_args()
@@ -614,7 +785,7 @@ def main():
     os.makedirs(logs_dir, exist_ok=True)
 
     # Construct the data path
-    data_path = os.path.join("my_datasets", "processed", "ehr", dataset_name, f"ehr_timeseries_{task_name}_test.json")
+    data_path = os.path.join("my_datasets", "ehr", dataset_name, "processed", f"ehr_{task_name}_test.json")
 
     # Load the dataset
     data = load_json(data_path)
@@ -630,7 +801,7 @@ def main():
     # Process each item in the dataset
     for item in tqdm(data, desc=f"Processing {dataset_name} ({task_name})"):
         qid = item.get("qid")
-        result_path = os.path.join(logs_dir, f"ehr_timeseries_{qid}-result.json")
+        result_path = os.path.join(logs_dir, f"ehr_{qid}-result.json")
 
         # Skip already processed items
         if os.path.exists(result_path):

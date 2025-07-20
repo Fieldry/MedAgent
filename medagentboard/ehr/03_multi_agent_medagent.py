@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from medagentboard.utils.llm_configs import LLM_MODELS_SETTINGS
 from medagentboard.utils.json_utils import load_json, save_json, preprocess_response_string
+from medagentboard.utils import prompt_template
 
 
 class MedicalSpecialty(Enum):
@@ -32,6 +33,7 @@ class AgentType(Enum):
     META = "Coordinator"
     DECISION_MAKER = "Decision Maker"
     EXPERT_GATHERER = "Expert Gatherer"
+    EVALUATOR = "Evaluator"
 
 
 class BaseAgent:
@@ -578,6 +580,83 @@ class DecisionMakingAgent(BaseAgent):
             return result
 
 
+class EvaluateAgent(BaseAgent):
+    """Evaluator Agent:
+    1. Evaluate the quality of each DoctorAgent's preliminary report and its similarity to the final report, scoring 10 points.
+    2. Evaluate the quality of the final patient report based on Factuality, Safety, and Explainability, using an LLM-as-a-judger approach.
+    Scores are on a scale of 1 to 5."""
+    def __init__(self, agent_id: str, model_key: str = "deepseek-v3-official"):
+        super().__init__(agent_id, AgentType.EVALUATOR, model_key)
+
+    def evaluate_final_report(self,
+        original_question: str,
+        final_report_str: str,
+        final_report_explanation: str,
+        final_report_prediction: float,
+        task_type: str,
+        label: str) -> Dict[str, Any]:
+        """
+        Evaluate the AI-generated final patient report for trustworthiness dimensions.
+
+        Args:
+            original_question: The complete original input (EHR data + initial model predictions).
+            final_report_str: The final generated report.
+            final_report_explanation: The 'explanation' part of the final generated report.
+            final_report_prediction: The 'prediction' part of the final generated report.
+            task_type: Type of task (mortality, readmission or sptb).
+            label: True label of the patient under the task.
+
+        Returns:
+            Dictionary containing evaluation scores and reasons for Factuality, Safety,
+            and Explainability, plus an overall comment.
+        """
+        system_message = {
+            "role": "system",
+            "content": prompt_template.REPORT_EVALUATOR_SYSTEM
+        }
+        user_message = {
+            "role": "user",
+            "content": prompt_template.REPORT_EVALUATOR_USER.format(
+                original_question=original_question,
+                final_report=final_report_str,
+                final_explanation=final_report_explanation,
+                final_prediction=final_report_prediction,
+                task_type=task_type,
+                true_label=label
+            )
+        }
+
+        response_text = self.call_llm(system_message, user_message)
+
+        try:
+            # First attempt to parse as clean JSON
+            result = json.loads(preprocess_response_string(response_text))
+
+            # Validate and normalize scores (ensure between 1 and 5)
+            for dim in ["accuracy", "explainability", "safety"]:
+                if dim in result and "score" in result[dim]:
+                    try:
+                        score = int(result[dim]["score"])
+                        result[dim]["score"] = max(1, min(5, score))
+                    except (ValueError, TypeError):
+                        result[dim]["score"] = 1 # Default to lowest if parsing fails
+                else:
+                    result[dim] = {"score": 1, "reason": "Missing or invalid score"}
+
+        except json.JSONDecodeError:
+            result = parse_structured_output_for_final_report(response_text)
+        except Exception as e:
+            result = {
+                "accuracy": {"score": 1, "reason": f"Parsing error: {e}"},
+                "explainability": {"score": 1, "reason": f"Parsing error: {e}"},
+                "safety": {"score": 1, "reason": f"Parsing error: {e}"}
+            }
+        result["system_message"] = system_message["content"]
+        result["user_message"] = user_message["content"]
+        result["response_text"] = response_text
+        return result
+
+
 class MDTConsultation:
     """Multi-disciplinary team consultation for EHR time-series prediction."""
 
@@ -585,7 +664,8 @@ class MDTConsultation:
                 max_rounds: int = 2,
                 model_key: str = "deepseek-v3-official",
                 meta_model_key: str = "deepseek-v3-official",
-                decision_model_key: str = "deepseek-v3-official"):
+                decision_model_key: str = "deepseek-v3-official",
+                evaluator_model_key: str = "deepseek-v3-official"):
         """
         Initialize MDT consultation for EHR prediction.
 
@@ -594,11 +674,13 @@ class MDTConsultation:
             model_key: LLM model for doctor agents
             meta_model_key: LLM model for meta agent
             decision_model_key: LLM model for decision making agent
+            evaluator_model_key: LLM model for evaluator agent
         """
         self.max_rounds = max_rounds
         self.model_key = model_key
         self.meta_model_key = meta_model_key
         self.decision_model_key = decision_model_key
+        self.evaluator_model_key = evaluator_model_key
 
         # Initialize expert gatherer agent
         self.expert_gatherer = ExpertGathererAgent("expert_gatherer", model_key)
@@ -613,6 +695,9 @@ class MDTConsultation:
         # Initialize decision making agent
         self.decision_agent = DecisionMakingAgent("decision", decision_model_key)
 
+        # Initialize evaluator agent
+        self.evaluator_agent = EvaluateAgent("evaluator", evaluator_model_key)
+
         print(f"Initialized MDT consultation for EHR prediction, max_rounds={max_rounds}, model={model_key}")
 
     def _initialize_doctor_agents(self, specialties: List[MedicalSpecialty]):
@@ -624,13 +709,13 @@ class MDTConsultation:
             self.doctor_agents.append(doctor_agent)
         self.doctor_specialties = specialties
 
-    def run_consultation(self, qid: str, question: str, task_type: str) -> Dict[str, Any]:
+    def run_consultation(self, qid: str, question: List[str], task_type: str, label: str) -> Dict[str, Any]:
         """
         Run the MDT consultation process for EHR prediction.
 
         Args:
             qid: Question ID
-            question: EHR data formatted as a question
+            question: EHR data formatted as a list of questions
             task_type: Type of prediction task (mortality or readmission)
 
         Returns:
@@ -639,10 +724,10 @@ class MDTConsultation:
         start_time = time.time()
 
         print(f"Starting MDT consultation for EHR case {qid}, task: {task_type}")
-        print(f"EHR Question length: {len(question)} characters")
+        print(f"EHR Question length: {len(question[-1])} characters")
 
         # Step 1: Gather relevant domain experts for this EHR data
-        specialties = self.expert_gatherer.gather_ehr_domain_experts(question, task_type)
+        specialties = self.expert_gatherer.gather_ehr_domain_experts(question[-1], task_type)
         print(f"Gathered specialties for EHR analysis: {[s.value for s in specialties]}")
 
         # Initialize doctor agents with these specialties
@@ -670,7 +755,7 @@ class MDTConsultation:
             doctor_opinions = []
             for i, doctor in enumerate(self.doctor_agents):
                 print(f"Doctor {i+1} ({doctor.specialty.value}) analyzing EHR data")
-                opinion = doctor.analyze_ehr(question, task_type)
+                opinion = doctor.analyze_ehr(question[i], task_type)
                 doctor_opinions.append(opinion)
                 round_data["opinions"].append({
                     "doctor_id": doctor.agent_id,
@@ -715,7 +800,7 @@ class MDTConsultation:
                 # Step 5: Decision making agent provides final probability prediction
                 print("Decision making agent generating final probability prediction")
                 final_decision = self.decision_agent.make_prediction(
-                    question, synthesis, doctor_opinions, task_type
+                    question[-1], synthesis, doctor_opinions, task_type
                 )
 
                 consensus_reached = all_agree
@@ -731,6 +816,16 @@ class MDTConsultation:
 
         print(f"Final probability prediction: {final_decision.get('answer', 'Not provided')}")
 
+        # Step 5: Evaluate the final patient report
+        final_report_evaluation = self.evaluator_agent.evaluate_final_report(
+            original_question=question[-1],
+            final_report_str=final_decision.get('explanation', ''),
+            final_report_explanation=final_decision.get('explanation', ''),
+            final_report_prediction=final_decision.get('answer', 0.501),
+            task_type=task_type,
+            label=label
+        )
+
         # Calculate processing time
         processing_time = time.time() - start_time
 
@@ -739,7 +834,7 @@ class MDTConsultation:
         case_history["consensus_reached"] = consensus_reached
         case_history["total_rounds"] = current_round
         case_history["processing_time"] = processing_time
-
+        case_history["report_trustworthiness_evaluation"] = final_report_evaluation
         return case_history
 
 
@@ -791,6 +886,45 @@ def parse_structured_output(response_text: str) -> Dict[str, Any]:
         return result
 
 
+def parse_structured_output_for_final_report(response_text: str) -> Dict[str, Any]:
+    """
+    Fallback parser for evaluation agent's response, extracting scores and reasons.
+    This is a simplified example; a more robust parser might be needed based on actual LLM output.
+    """
+    result = {
+        "accuracy": {"score": 1, "reason": "Could not parse reason."},
+        "safety": {"score": 1, "reason": "Could not parse reason."},
+        "explainability": {"score": 1, "reason": "Could not parse reason."},
+    }
+
+    # Simple regex-like extraction (not perfect for complex cases)
+    lines = response_text.split('\n')
+    current_dim = None
+
+    for line in lines:
+        line = line.strip()
+        if "accuracy:" in line.lower():
+            current_dim = "accuracy"
+        elif "safety:" in line.lower():
+            current_dim = "safety"
+        elif "explainability:" in line.lower():
+            current_dim = "explainability"
+
+        if current_dim:
+            if "score:" in line.lower():
+                try:
+                    score_str = line.split("score:", 1)[1].strip().split(" ")[0] # Get first number
+                    score = int(float(score_str)) # Handle floats like 4.0
+                    result[current_dim]["score"] = max(1, min(5, score))
+                except ValueError:
+                    pass
+            if "reason:" in line.lower():
+                reason = line.split("reason:", 1)[1].strip()
+                result[current_dim]["reason"] = reason
+
+    return result
+
+
 def detect_task_type(question: str) -> str:
     """
     Detect whether the EHR prediction task is for mortality or readmission.
@@ -808,7 +942,7 @@ def detect_task_type(question: str) -> str:
         return "mortality"
 
 
-def process_ehr_item(item, model_key="deepseek-v3-official", meta_model_key="deepseek-v3-official", decision_model_key="deepseek-v3-official"):
+def process_ehr_item(item, model_key="deepseek-v3-official", meta_model_key="deepseek-v3-official", decision_model_key="deepseek-v3-official", evaluator_model_key="deepseek-v3-official"):
     """
     Process EHR time-series data for prediction.
 
@@ -817,6 +951,7 @@ def process_ehr_item(item, model_key="deepseek-v3-official", meta_model_key="dee
         model_key: Model key for the doctor agents
         meta_model_key: Model key for the meta agent
         decision_model_key: Model key for the decision making agent
+        evaluator_model_key: Model key for the evaluator agent
 
     Returns:
         Processed result from MDT consultation
@@ -826,9 +961,10 @@ def process_ehr_item(item, model_key="deepseek-v3-official", meta_model_key="dee
     # Required fields
     qid = str(item.get("qid"))
     question = item.get("question")
+    label = item.get("ground_truth")
 
     # Detect task type from question content
-    task_type = detect_task_type(question)
+    task_type = detect_task_type(question[-1])
     print(f"Detected task type: {task_type}")
 
     # Initialize consultation
@@ -836,14 +972,16 @@ def process_ehr_item(item, model_key="deepseek-v3-official", meta_model_key="dee
         max_rounds=2,  # Reduced to 2 rounds to optimize processing time for EHR data
         model_key=model_key,
         meta_model_key=meta_model_key,
-        decision_model_key=decision_model_key
+        decision_model_key=decision_model_key,
+        evaluator_model_key=evaluator_model_key
     )
 
     # Run consultation
     result = mdt.run_consultation(
         qid=qid,
         question=question,
-        task_type=task_type
+        task_type=task_type,
+        label=label
     )
 
     # Calculate processing time
@@ -855,8 +993,8 @@ def process_ehr_item(item, model_key="deepseek-v3-official", meta_model_key="dee
 
 def main():
     parser = argparse.ArgumentParser(description="Run multi-agent EHR predictions")
-    parser.add_argument("--dataset", type=str, required=True, help="Dataset name (mimic-iv or tjh)")
-    parser.add_argument("--task", type=str, required=True, choices=["mortality", "readmission"],
+    parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name (mimic-iv or tjh)")
+    parser.add_argument("--task", "-t", type=str, required=True, choices=["mortality", "readmission", "sptb"],
                         help="Prediction task type")
     parser.add_argument("--model", type=str, default="deepseek-v3-official",
                         help="Model used for doctor agents")
@@ -864,6 +1002,10 @@ def main():
                         help="Model used for meta agent")
     parser.add_argument("--decision_model", type=str, default="deepseek-v3-official",
                         help="Model used for decision making agent")
+    parser.add_argument("--evaluator_model", type=str, default="deepseek-v3-official",
+                        help="Model used for evaluator agent")
+    parser.add_argument("--modality", type=str, default="ehr",
+                        help="Modality of the data")
     args = parser.parse_args()
 
     method = "MedAgent"
@@ -871,14 +1013,15 @@ def main():
     # Extract dataset name and task
     dataset_name = args.dataset
     task_name = args.task
-    print(f"Dataset: {dataset_name}, Task: {task_name}")
+    modality = args.modality
+    print(f"Dataset: {dataset_name}, Task: {task_name}, Modality: {modality}")
 
     # Create logs directory structure
     logs_dir = os.path.join("logs", "ehr", dataset_name, task_name, method)
     os.makedirs(logs_dir, exist_ok=True)
 
     # Set up data path
-    data_path = f"./my_datasets/processed/ehr/{dataset_name}/ehr_timeseries_{task_name}_test.json"
+    data_path = f"./my_datasets/ehr/{dataset_name}/processed/{modality}_{task_name}_test.json"
 
     # Load the data
     data = load_json(data_path)
@@ -887,7 +1030,7 @@ def main():
     # Process each item
     for item in tqdm(data, desc=f"Running EHR predictions on {dataset_name}/{task_name}"):
         qid = item["qid"]
-        result_path = os.path.join(logs_dir, f"ehr_timeseries_{qid}-result.json")
+        result_path = os.path.join(logs_dir, f"ehr_{qid}-result.json")
 
         # Skip if already processed
         if os.path.exists(result_path):
@@ -900,7 +1043,8 @@ def main():
                 item,
                 model_key=args.model,
                 meta_model_key=args.meta_model,
-                decision_model_key=args.decision_model
+                decision_model_key=args.decision_model,
+                evaluator_model_key=args.evaluator_model
             )
 
             # Add output to the original item and save
