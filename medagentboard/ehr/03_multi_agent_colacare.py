@@ -203,7 +203,7 @@ class DoctorAgent(BaseAgent):
             # Step 2: Call the simulated RAG tool with the generated query
             retrieved_literature = "Retrieved literature:\n"
             for i, query in enumerate(rag_query):
-                retrieved_literature += await litsense_api_call(query=query, order=i, max_results=10) + "\n"
+                retrieved_literature += await litsense_api_call(query=query, order=i, max_results=5) + "\n"
 
             if self.logger:
                 self.logger.info(f"Doctor {self.agent_id} retrieved literature (first 200 chars): {retrieved_literature[:200]}...")
@@ -1147,7 +1147,7 @@ async def process_input(item, task_type, doctor_configs=None, meta_model_key="de
 
     # Initialize consultation
     mdt = MDTConsultation(
-        max_rounds=2,
+        max_rounds=1,
         doctor_configs=doctor_configs,
         meta_model_key=meta_model_key,
         evaluator_model_key=evaluator_model_key,
@@ -1171,17 +1171,18 @@ async def process_input(item, task_type, doctor_configs=None, meta_model_key="de
 
 async def main():
     parser = argparse.ArgumentParser(description="Run MDT consultation on EHR datasets")
-    parser.add_argument("--dataset", "-d", type=str, required=True, choices=["mimic-iv", "tjh", "esrd", "obstetrics"], help="Specify dataset name: mimic-iv or tjh or esrd")
+    parser.add_argument("--dataset", "-d", type=str, required=True, choices=["mimic-iv", "cdsl", "esrd", "obstetrics"], help="Specify dataset name: mimic-iv or cdsl or esrd")
     parser.add_argument("--task", "-t", type=str, required=True, choices=["mortality", "readmission", "sptb"], help="Prediction task: mortality or readmission or sptb")
     parser.add_argument("--modality", "-mo", type=str, default="ehr", choices=["ehr", "note", "mm"], help="Modality of the dataset: ehr or note or mm")
     parser.add_argument("--meta_model", type=str, default="deepseek-v3-official", help="Model used for meta agent")
     parser.add_argument("--doctor_models", nargs='+', default=["deepseek-v3-official", "deepseek-v3-official", "deepseek-v3-official"],
                         help="Models used for doctor agents. Provide one model name per doctor.")
     parser.add_argument("--evaluate_model", type=str, default="deepseek-v3-official", help="Model used for evaluator agent")
-    parser.add_argument("--use_rag", action="store_true", default=True, help="Whether to use RAG for the doctor agents")
+    parser.add_argument("--use_rag", action="store_true", default=False, help="Whether to use RAG for the doctor agents")
     args = parser.parse_args()
 
     method = "ColaCare" # ColaCare by default
+    llm_model = args.meta_model
 
     # Dataset and task
     dataset_name = args.dataset
@@ -1190,7 +1191,7 @@ async def main():
     print(f"Dataset: {dataset_name}, Task: {task_type}, Modality: {modality}")
 
     # Validate the dataset and task combination
-    if dataset_name in ["tjh", "esrd", "obstetrics"] and task_type == "readmission":
+    if dataset_name in ["cdsl", "esrd", "obstetrics"] and task_type == "readmission":
         print(f"Error: The {dataset_name} dataset doesn't contain readmission task data.")
         return
 
@@ -1199,7 +1200,6 @@ async def main():
         "esrd": "End-Stage Renal Disease",
         "cdsl": "COVID-19",
         "mimic-iv": "Intensive Care",
-        "tjh": "COVID-19",
         "obstetrics": "Obstetrics",
     }
 
@@ -1207,7 +1207,7 @@ async def main():
     print(f"Doctors' specialty for this dataset ({dataset_name}): {dataset_specialty}")
 
     # Create logs directory structure
-    save_dir = os.path.join("logs", dataset_name, task_type, method, modality)
+    save_dir = os.path.join("logs", dataset_name, task_type, method, f"{modality}_{llm_model}")
     logs_dir = os.path.join(save_dir, "logs")
     results_dir = os.path.join(save_dir, "results")
     error_dir = os.path.join(save_dir, "error")
@@ -1245,7 +1245,7 @@ async def main():
         # Truncate the question for note modality
         question = question[:500] if modality == "note" else question
 
-        save_file_name = f"ehr_{qid_str}-result.json" if args.use_rag else f"ehr_{qid_str}-worag-result.json"
+        save_file_name = f"ehr_{qid_str}-result.json"
 
         # Skip if already processed
         if os.path.exists(os.path.join(results_dir, save_file_name)):
@@ -1298,7 +1298,7 @@ async def main():
             if logger:
                 logger.error(f"Error processing item {qid}: {e}")
             # Optionally, save an error log for the QID
-            error_log_path = os.path.join(error_dir, f"ehr_{qid_str}-error.log") if args.use_rag else os.path.join(error_dir, f"ehr_{qid_str}-worag-error.log")
+            error_log_path = os.path.join(error_dir, f"ehr_{qid_str}-error.log")
             with open(error_log_path, "w") as f:
                 f.write(f"Error processing {qid}: {e}\n")
                 import traceback
