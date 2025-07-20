@@ -78,7 +78,7 @@ def format_input_ehr(
 
     Args:
         patient: List of patient visits
-        dataset: Dataset name ('mimic-iv' or 'tjh')
+        dataset: Dataset name ('mimic-iv', 'esrd', 'obstetrics' or 'cdsl')
         features: List of feature names
         mask: Missing value masks
 
@@ -309,7 +309,7 @@ def get_distribution(data, values):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate query for LLM")
-    parser.add_argument("--dataset", "-d", type=str, required=True, choices=["mimic-iv", "tjh", "esrd", "obstetrics"], help="Specify dataset name: mimic-iv or tjh or esrd or obstetrics")
+    parser.add_argument("--dataset", "-d", type=str, required=True, choices=["mimic-iv", "cdsl", "esrd", "obstetrics"], help="Specify dataset name: mimic-iv or cdsl or esrd or obstetrics")
     parser.add_argument("--task", "-t", type=str, required=True, choices=["mortality", "readmission", "sptb", "los"], help="Prediction task: mortality or readmission or sptb or los")
     parser.add_argument("--models", "-m", nargs='+', default=["AdaCare", "ConCare", "RETAIN"],
                        help="DL models to use for generating query")
@@ -324,9 +324,9 @@ def main():
     print(f"Dataset: {dataset}, Task: {task}, Models: {models}, Modality: {modality}")
 
     split = "split"
-    if dataset == 'tjh':
+    if dataset == 'cdsl':
         demo_dim = 2
-        lab_dim = 73
+        lab_dim = 97
     elif args.dataset == 'mimic-iv':
         demo_dim = 2
         lab_dim = 42
@@ -338,7 +338,7 @@ def main():
         lab_dim = 32
         split = "solo"
     else:
-        raise ValueError("Unsupported dataset. Choose either 'tjh' or 'mimic-iv' or 'esrd' or 'obstetrics'.")
+        raise ValueError("Unsupported dataset. Choose either 'cdsl' or 'mimic-iv' or 'esrd' or 'obstetrics'.")
 
     dataset_root = "my_datasets/ehr"
     results_root = "logs"
