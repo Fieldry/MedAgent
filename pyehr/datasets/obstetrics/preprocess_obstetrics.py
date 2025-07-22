@@ -121,7 +121,7 @@ for kind in ['solo', 'multi']:
     test_patients_outcome = np.array([grouped.get_group(patient_id)['Outcome'].iloc[0] for patient_id in test_patients])
 
     sub_train_val_patients, sub_test_patients, sub_train_val_outcomes, _ = train_test_split(
-        test_patients, test_patients_outcome, test_size=100, random_state=SEED, stratify=test_patients_outcome
+        test_patients, test_patients_outcome, test_size=200, random_state=SEED, stratify=test_patients_outcome
     )
     sub_train_patients, sub_val_patients, _, _ = train_test_split(
         sub_train_val_patients, sub_train_val_outcomes, test_size=50, random_state=SEED, stratify=sub_train_val_outcomes

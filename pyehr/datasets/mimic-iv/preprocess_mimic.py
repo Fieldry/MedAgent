@@ -146,9 +146,9 @@ test_data = [{
 
 # Split test data into 3 parts: 150 patients for train, 50 patients for val, 100 patients for test
 test_patients_outcome = np.array([grouped.get_group(patient_id)['Outcome'].iloc[0] for patient_id in test_patients])
-sub_train_val_patients, sub_test_patients = train_test_split(test_patients, test_size=100, random_state=SEED, stratify=test_patients_outcome)
+sub_train_val_patients, sub_test_patients = train_test_split(test_patients, test_size=200, random_state=SEED, stratify=test_patients_outcome)
 sub_train_val_patients_outcome = np.array([grouped.get_group(patient_id)['Outcome'].iloc[0] for patient_id in sub_train_val_patients])
-sub_train_patients, sub_val_patients = train_test_split(sub_train_val_patients, test_size=1/4, random_state=SEED, stratify=sub_train_val_patients_outcome)
+sub_train_patients, sub_val_patients = train_test_split(sub_train_val_patients, test_size=1/2, random_state=SEED, stratify=sub_train_val_patients_outcome)
 
 sub_train_data = [item for item in test_data if item['id'] in sub_train_patients]
 sub_val_data = [item for item in test_data if item['id'] in sub_val_patients]
