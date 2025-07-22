@@ -22,24 +22,41 @@ class EhrDataset(data.Dataset):
 
 
 class EhrDataModule(L.LightningDataModule):
-    def __init__(self, data_path, task, batch_size=32, test_mode: str="test"):
+    def __init__(self, data_path, task, batch_size=32, test_mode: str="test", train_sample_weights=None):
         super().__init__()
         self.batch_size = batch_size
         self.train_dataset = EhrDataset(data_path, task, mode="train")
         self.val_dataset = EhrDataset(data_path, task, mode="val")
         self.test_dataset = EhrDataset(data_path, task, mode=test_mode)
+        self.train_sample_weights = train_sample_weights
 
     def train_dataloader(self):
         multiprocessing_context='fork' if torch.backends.mps.is_available() else None
-        return data.DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True , collate_fn=self.pad_collate, num_workers=8,persistent_workers=True, multiprocessing_context=multiprocessing_context)
+        if self.train_sample_weights is not None:
+            sampler = data.WeightedRandomSampler(
+                weights=self.train_sample_weights,
+                num_samples=len(self.train_sample_weights),
+                replacement=True
+            )
+            return data.DataLoader(self.train_dataset, batch_size=self.batch_size, sampler=sampler, collate_fn=self.pad_collate, num_workers=8, multiprocessing_context=multiprocessing_context, persistent_workers=True)
+        else:
+            return data.DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, collate_fn=self.pad_collate, num_workers=8, multiprocessing_context=multiprocessing_context, persistent_workers=True)
+
+    def train_dataloader_for_update(self):
+        """
+        A special dataloader for getting predictions on the full training set
+        in its original order, which is needed for updating weights.
+        """
+        multiprocessing_context='fork' if torch.backends.mps.is_available() else None
+        return data.DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=False, collate_fn=self.pad_collate, num_workers=8, multiprocessing_context=multiprocessing_context)
 
     def val_dataloader(self):
         multiprocessing_context='fork' if torch.backends.mps.is_available() else None
-        return data.DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False , collate_fn=self.pad_collate, num_workers=8,persistent_workers=True, multiprocessing_context=multiprocessing_context)
+        return data.DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False , collate_fn=self.pad_collate, num_workers=8, persistent_workers=True, multiprocessing_context=multiprocessing_context)
 
     def test_dataloader(self):
         multiprocessing_context='fork' if torch.backends.mps.is_available() else None
-        return data.DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False , collate_fn=self.pad_collate, num_workers=8,persistent_workers=True, multiprocessing_context=multiprocessing_context)
+        return data.DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False , collate_fn=self.pad_collate, num_workers=8, persistent_workers=True, multiprocessing_context=multiprocessing_context)
 
     def pad_collate(self, batch):
         xx, yy, pid = zip(*batch)
