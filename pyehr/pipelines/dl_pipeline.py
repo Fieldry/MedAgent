@@ -41,64 +41,64 @@ class DlPipeline(L.LightningModule):
         self.test_performance = {}
         self.test_outputs = {}
 
-    def forward(self, x, lens):
+    def forward(self, batch):
+        x, y, lens, _ = batch
         if self.model_name == "ConCare":
             x_demo, x_lab, mask = x[:, 0, :self.demo_dim], x[:, :, self.demo_dim:], generate_mask(lens)
             embedding, attn, decov_loss = self.ehr_encoder(x_lab, x_demo, mask)
             embedding, attn, decov_loss = embedding.to(x.device), attn.to(x.device), decov_loss.to(x.device)
             y_hat = self.head(embedding)
-            return y_hat, embedding, attn, decov_loss
+            return y_hat, y, embedding, attn, decov_loss
         elif self.model_name in ["AdaCare", "RETAIN"]:
             mask = generate_mask(lens)
             embedding, attn = self.ehr_encoder(x, mask)
             embedding, attn = embedding.to(x.device), attn.to(x.device)
             y_hat = self.head(embedding)
-            return y_hat, embedding, attn
+            return y_hat, y, embedding, attn
         elif self.model_name in ["GRASP", "Agent", "AICare"]:
             x_demo, x_lab, mask = x[:, 0, :self.demo_dim], x[:, :, self.demo_dim:], generate_mask(lens)
             embedding = self.ehr_encoder(x_lab, x_demo, mask).to(x.device)
             y_hat = self.head(embedding)
-            return y_hat, embedding
+            return y_hat, y, embedding
         elif self.model_name in ["AnchCare", "TCN", "Transformer", "StageNet"]:
             mask = generate_mask(lens)
             embedding = self.ehr_encoder(x, mask).to(x.device)
             y_hat = self.head(embedding)
-            return y_hat, embedding
+            return y_hat, y, embedding
         elif self.model_name in ["GRU", "LSTM", "RNN", "MLP"]:
             embedding = self.ehr_encoder(x).to(x.device)
             y_hat = self.head(embedding)
-            return y_hat, embedding
+            return y_hat, y, embedding
         elif self.model_name in ["MCGRU"]:
             x_demo, x_lab = x[:, 0, :self.demo_dim], x[:, :, self.demo_dim:]
             embedding = self.ehr_encoder(x_lab, x_demo).to(x.device)
             y_hat = self.head(embedding)
-            return y_hat, embedding
+            return y_hat, y, embedding
 
-    def _get_loss(self, x, y, lens):
+    def _get_loss(self, batch):
+        lens = batch[2]
         if self.model_name == "ConCare":
-            y_hat, embedding, attn, decov_loss = self(x, lens)
+            y_hat, y, embedding, attn, decov_loss = self(batch)
             y_hat, y = unpad_y(y_hat, y, lens)
             loss = get_loss(y_hat, y, self.task, self.time_aware)
             loss += 10*decov_loss
         elif self.model_name in ["AdaCare", "RETAIN"]:
-            y_hat, embedding, attn = self(x, lens)
+            y_hat, y, embedding, attn = self(batch)
             y_hat, y = unpad_y(y_hat, y, lens)
             loss = get_loss(y_hat, y, self.task, self.time_aware)
         else:
-            y_hat, embedding = self(x, lens)
+            y_hat, y, embedding = self(batch)
             y_hat, y = unpad_y(y_hat, y, lens)
             loss = get_loss(y_hat, y, self.task, self.time_aware)
             attn = None
         return loss, y, y_hat, embedding, attn
 
     def training_step(self, batch, _):
-        x, y, lens, _ = batch
-        loss, y, _, _, _ = self._get_loss(x, y, lens)
+        loss = self._get_loss(batch)[0]
         self.log("train_loss", loss)
         return loss
     def validation_step(self, batch, _):
-        x, y, lens, _ = batch
-        loss, y, y_hat, _, _ = self._get_loss(x, y, lens)
+        loss, y, y_hat, _, _ = self._get_loss(batch)
         self.log("val_loss", loss)
         outs = {'preds': y_hat, 'labels': y, 'val_loss': loss}
         self.validation_step_outputs.append(outs)
@@ -119,8 +119,8 @@ class DlPipeline(L.LightningModule):
         return main_score
 
     def test_step(self, batch, _):
-        x, y, lens, pid = batch
-        loss, y, y_hat, embedding, attn = self._get_loss(x, y, lens)
+        pid = batch[-1]
+        loss, y, y_hat, embedding, attn = self._get_loss(batch)
         outs = {'preds': y_hat, 'labels': y, 'pids': pid, 'embedding': embedding, 'attn': attn}
         self.test_step_outputs.append(outs)
         return loss

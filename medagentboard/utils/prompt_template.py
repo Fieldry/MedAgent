@@ -36,7 +36,6 @@ DOCTOR_ANALYZE_SYSTEM = (
     "{task_hint}"
 )
 DOCTOR_ANALYZE_USER = (
-    "Retrieved Literature (from PubMed):\n{retrieved_literature}\n\n"
     "Patient EHR data:\n{question}\n\n"
     "Provide your analysis in JSON format, including 'explanation' and 'prediction' fields."
 )
@@ -204,3 +203,14 @@ TASK_HINT_REVIEW_READMISSION = (
 TASK_HINT_REVIEW_SPTB = (
     " Remember, the prediction value should reflect the probability of spontaneous preterm birth (higher values indicate higher spontaneous preterm birth risk)."
 )
+
+# Few-shot prompt templates
+FEW_SHOT_PROMPT_MORTALITY = """
+The patient, a 65.73-year-old male with ESRD due to Diabetic Nephropathy and underlying diabetes, is at a high risk of mortality. Key risk factors include persistent severe inflammation (elevated hs-CRP peaking at 9.60 mg/L), chronic hypoalbuminemia (31.4 g/L), hyponatremia (serum sodium as low as 131.00 mEq/L), and malnutrition (reduced food intake of 2525.66 g). While some biomarkers like hemoglobin are within normal range, the cumulative impact of these severe and persistent risk factors suggests a poor prognosis and a mortality probability of 0.72.
+"""
+FEW_SHOT_PROMPT_READMISSION = """
+The 75-year-old male ICU patient exhibits clinical indicators suggesting a moderate risk of readmission within 30 days post-discharge. The patient's age, elevated respiratory rate, variability in Glasgow Coma Scale (GCS) verbal responses, and borderline low systolic blood pressure continue to be significant risk factors and lead to the prediction of 0.45.
+"""
+FEW_SHOT_PROMPT_SPTB = """
+I give a low risk of spontaneous preterm birth (sPTB) to this patient, with a predicted probability of 0.16. The patient's underweight BMI and progressive anemia were noted as potential risk factors, but these were balanced by normal coagulation parameters, absence of significant medical history, and term delivery outcome.
+"""

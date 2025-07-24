@@ -55,11 +55,9 @@ class SigmoidTemperatureScaling(nn.Module):
         def bce_criterion_for_optimizer(temp_val_scalar):
             temp_val = float(temp_val_scalar)
             temp_val = max(temp_val, 1e-6)
-            print(f"  Optimizer attempting temp_val (raw): {temp_val:.6f}, (bounded): {temp_val:.6f}")
 
             scaled_logits_np = logits_cal_np / temp_val
             if np.any(np.isinf(scaled_logits_np)) or np.any(np.isnan(scaled_logits_np)):
-                print(f"    WARNING: scaled_logits_np contains Inf/NaN for temp_val={temp_val}.")
                 return 1e20
 
             scaled_logits_tensor = torch.from_numpy(logits_cal_np / temp_val).float().to(logits_cal.device)
@@ -98,10 +96,10 @@ class SigmoidTemperatureScaling(nn.Module):
             loss_fn = nn.BCEWithLogitsLoss() # 适用于Sigmoid输出的logits
             loss = loss_fn(scaled_logits_tensor, labels_tensor)
             if torch.isnan(loss) or torch.isinf(loss):
-                print(f"    WARNING: NaN/Inf loss detected for temp_val: {temp_val}.")
+                # print(f"    WARNING: NaN/Inf loss detected for temp_val: {temp_val}.")
                 return 1e20
 
-            print(f"    Loss for temp_val={temp_val:.6f}: {loss.item():.8f}") # 打印计算出的损失
+            # print(f"    Loss for temp_val={temp_val:.6f}: {loss.item():.8f}") # 打印计算出的损失
             return loss.item()
 
         # 初始温度猜测
@@ -110,27 +108,28 @@ class SigmoidTemperatureScaling(nn.Module):
         if initial_temp <= 0: # 确保初始猜测是正数
             initial_temp = 1.5 # 默认一个合理值
 
-        print("--- Manual BCE Criterion Check for Temperature Sensitivity ---")
+        # print("--- Manual BCE Criterion Check for Temperature Sensitivity ---")
         # 生成一系列测试温度点，例如从0.1到5.0，包含你的初始温度
         # 确保下限不小于 minimize 中的 bounds[0][0] (例如 1e-5)
         test_temps_manual = np.linspace(max(1e-5, initial_temp - 1.1), initial_temp + 3.8, num=30) # 更宽的范围，更多的点
         test_temps_manual = np.clip(test_temps_manual, 1e-5, None) # 再次确保下限
 
         temp_losses_manual = []
-        print("  Temp   | Loss")
-        print("  -------|----------")
+        # print("  Temp   | Loss")
+        # print("  -------|----------")
         for tt_manual in test_temps_manual:
             try:
                 # 直接调用你的目标函数来计算损失
                 loss_val_manual = bce_criterion_for_optimizer(tt_manual)
-                print(f"  {tt_manual:<6.4f} | {loss_val_manual:.8f}")
+                # print(f"  {tt_manual:<6.4f} | {loss_val_manual:.8f}")
                 if not (math.isnan(loss_val_manual) or math.isinf(loss_val_manual)):
                     temp_losses_manual.append((tt_manual, loss_val_manual))
             except Exception as e_manual_test:
-                print(f"  {tt_manual:<6.4f} | ERROR: {e_manual_test}")
-        print("----------------------------------------------------------")
+                pass
+                # print(f"  {tt_manual:<6.4f} | ERROR: {e_manual_test}")
+        # print("----------------------------------------------------------")
 
-        print(f"--- Starting optimization with minimize_scalar, initial_temp_guess_for_bracket_or_brent_is_around: {initial_temp} ---")
+        # print(f"--- Starting optimization with minimize_scalar, initial_temp_guess_for_bracket_or_brent_is_around: {initial_temp} ---")
 
         try:
             res = minimize_scalar(
@@ -145,20 +144,22 @@ class SigmoidTemperatureScaling(nn.Module):
             message = res.message
             fun_val = res.fun
 
-            print(f"minimize_scalar result: success={success}, best_temp={best_temp:.4f}, final_loss={fun_val:.6f}, message='{message}'")
+            # print(f"minimize_scalar result: success={success}, best_temp={best_temp:.4f}, final_loss={fun_val:.6f}, message='{message}'")
 
             if success: # 或者检查 res.fun 是否是有效数值且比初始损失低
                 self.temperature.data = torch.ones(1, device=logits_cal.device) * best_temp
-                print(f"Optimal temperature found with minimize_scalar: {best_temp:.4f}")
+                # print(f"Optimal temperature found with minimize_scalar: {best_temp:.4f}")
             else:
-                print(f"Temperature optimization with minimize_scalar failed or did not improve: {message}")
-                print(f"Optimizer details: {res}")
-                print("Using initial temperature or last successful temperature (if any).")
+                pass
+                # print(f"Temperature optimization with minimize_scalar failed or did not improve: {message}")
+                # print(f"Optimizer details: {res}")
+                # print("Using initial temperature or last successful temperature (if any).")
                 # 保持 self.temperature 为优化前的值 (即 initial_temp)
 
         except Exception as e_scalar_opt:
-            print(f"Error during minimize_scalar: {e_scalar_opt}")
-            print("Using initial temperature due to optimization error.")
+            pass
+            # print(f"Error during minimize_scalar: {e_scalar_opt}")
+            # print("Using initial temperature due to optimization error.")
             # self.temperature 保持不变 (即 initial_temp)
 
         return self

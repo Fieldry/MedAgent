@@ -38,5 +38,12 @@ LLM_MODELS_SETTINGS = {
         "model_name": "o4-mini-2025-04-16",
         "comment": "O4 Mini",
         "reasoning": False,
+    },
+    "gemini-2.5": {
+        "api_key": os.getenv("GOOGLE_API_KEY"),
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "model_name": "gemini-2.5-pro",
+        "comment": "Gemini-2.5-pro-preview-05-06",
+        "reasoning": False,
     }
 }
