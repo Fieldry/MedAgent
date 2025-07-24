@@ -47,13 +47,16 @@ class MyDataModule(L.LightningDataModule):
         self.test_dataset = MyDataset(data_path, mode="test")
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
+        multiprocessing_context='fork' if torch.backends.mps.is_available() else None
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=8, multiprocessing_context=multiprocessing_context)
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+        multiprocessing_context='fork' if torch.backends.mps.is_available() else None
+        return DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=8, multiprocessing_context=multiprocessing_context)
 
     def test_dataloader(self):
-        return DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+        multiprocessing_context='fork' if torch.backends.mps.is_available() else None
+        return DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=8, multiprocessing_context=multiprocessing_context)
 
 
 class AttentionFusionLayer(nn.Module):
@@ -81,10 +84,6 @@ class AttentionFusionLayer(nn.Module):
         # Keys和Values就是我们的EHR嵌入列表
         keys = ehr_embeddings_list
         values = ehr_embeddings_list
-
-        print("Query shape:", query.shape)
-        print("Keys shape:", keys.shape)
-        print("Values shape:", values.shape)
 
         # attn_output shape: (batch_size, 1, embed_dim)
         # attn_weights shape: (batch_size, 1, num_models) -> 我们可以用这个来做可视化分析！
@@ -117,7 +116,6 @@ class AttentionFusionModel(nn.Module):
         # text shape: (batch, embed_dim)
 
         ehr_list = self.ehr_proj(ehr_list)
-        print(ehr_list.shape)
         # ehr_list shape: (batch, num_models, merge_embed_dim)
 
         # 1. 动态融合EHR嵌入
@@ -281,11 +279,11 @@ class Pipeline(L.LightningModule):
 
 def run_experiment(config):
     # data
-    data_path = os.path.join("logs", config["dataset"], config["task"], config["method"], config["modality"])
+    data_path = os.path.join("logs", config["dataset"], config["task"], config["method"], f'{config["modality"]}_{config["lm_name"]}')
     dm = MyDataModule(batch_size=config["batch_size"], data_path=data_path)
 
     # logger
-    log_name = f"{config['dataset']}/{config['task']}/{config['method']}/{config['modality']}/attention_fusion/{'-'.join(config['ehr_model_names'])}_{config['lm_name']}"
+    log_name = f"{config['dataset']}/{config['task']}/{config['method']}/{config['modality']}_{config['lm_name']}/fusion/{'-'.join(config['ehr_model_names'])}_{config['lm_name']}"
     logger = CSVLogger(save_dir="logs", name=log_name, flush_logs_every_n_steps=1)
 
     # Callbacks
@@ -312,12 +310,13 @@ def run_experiment(config):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name", choices=["tjh", "mimic-iv", "esrd", "obstetrics"])
+    parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name", choices=["cdsl", "mimic-iv", "esrd", "obstetrics"])
     parser.add_argument("--task", "-t", type=str, required=True, help="Task name", choices=["mortality", "readmission", "los", "sptb"])
-    parser.add_argument("--method", "-m", type=str, default="ColaCare", help="Method name", choices=["ColaCare"])
+    parser.add_argument("--method", "-m", type=str, default="ColaCare", help="Method name", choices=["ColaCare", "MedAgent", "ReConcile"])
     parser.add_argument("--ehr_model_names", "-em", type=str, nargs="+", required=True, help="EHR model names")
-    parser.add_argument("--lm_name", "-lm", type=str, required=True, help="Language model name")
+    parser.add_argument("--lm_name", "-lm", type=str, required=True, help="Large Language model name")
     parser.add_argument("--modality", "-md", type=str, help="Modality", default="ehr", choices=["ehr", "mm"])
+    parser.add_argument("--use_rag", "-ur", action="store_true", help="Use RAG to generate reports.")
 
     parser.add_argument('--ehr_embed_dim', '-ehd', type=int, default=128, help='EHR embedding dimension')
     parser.add_argument('--text_embed_dim', '-thd', type=int, default=1024, help='Text embedding dimension')
@@ -337,7 +336,7 @@ if __name__ == "__main__":
     args = parse_args()
     config = vars(args)
 
-    all_perf_df = pd.DataFrame()
+    fusion_perf_df = pd.DataFrame()
     for fusion_method in ["score", "concat", "attention"]:
         config["fusion_method"] = fusion_method
         dm, perf, outs = run_experiment(config)
@@ -353,9 +352,10 @@ if __name__ == "__main__":
             "model": args.method + "_" + fusion_method,
             "dataset": args.dataset,
             "task": args.task,
+            "llm": args.lm_name,
         }, **perf_boot)
         perf_df = pd.DataFrame(perf_boot, index=[0])
-        all_perf_df = pd.concat([all_perf_df, perf_df], ignore_index=True)
+        fusion_perf_df = pd.concat([fusion_perf_df, perf_df], ignore_index=True)
 
     ehr_preds = dm.test_dataset.ehr_preds
     ehr_preds = np.array(ehr_preds).transpose(1, 0)
@@ -363,6 +363,7 @@ if __name__ == "__main__":
     assert ehr_preds.shape[0] == len(args.ehr_model_names)
     assert ehr_preds.shape[1] == len(dm.test_dataset.pids)
 
+    ehr_perf_df = pd.DataFrame()
     for ehr_pred, ehr_model_name in zip(ehr_preds, args.ehr_model_names):
         perf_boot = run_bootstrap(ehr_pred, outs["y_true"], {"task": args.task, "los_info": None})
         for key, value in perf_boot.items():
@@ -374,10 +375,13 @@ if __name__ == "__main__":
             "model": ehr_model_name,
             "dataset": args.dataset,
             "task": args.task,
+            "llm": args.lm_name,
         }, **perf_boot)
-        perf_df = pd.concat([pd.DataFrame(perf_boot, index=[0]), perf_df], ignore_index=True)
+        perf_df = pd.DataFrame(perf_boot, index=[0])
+        ehr_perf_df = pd.concat([ehr_perf_df, perf_df], ignore_index=True)
 
-    log_dir = os.path.join("logs", args.dataset, args.task, args.method, args.modality, "attention_fusion")
+    log_dir = os.path.join("logs", args.dataset, args.task, args.method, f'{args.modality}_{args.lm_name}', "fusion")
     os.makedirs(log_dir, exist_ok=True)
-    perf_df.to_csv(os.path.join(log_dir, "performance.csv"), index=False)
-    print(f"Performance saved to {log_dir}/performance.csv")
+    all_perf_df = pd.concat([ehr_perf_df, fusion_perf_df], ignore_index=True)
+    all_perf_df.to_csv(os.path.join(log_dir, f"05_fusion_performance_{'w' if args.use_rag else 'worag'}.csv"), index=False)
+    print(f"Performance saved to {log_dir}/05_fusion_performance_{'w' if args.use_rag else 'worag'}.csv")

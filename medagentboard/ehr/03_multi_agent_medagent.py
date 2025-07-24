@@ -993,7 +993,7 @@ def process_ehr_item(item, model_key="deepseek-v3-official", meta_model_key="dee
 
 def main():
     parser = argparse.ArgumentParser(description="Run multi-agent EHR predictions")
-    parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name (mimic-iv or tjh)")
+    parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name", choices=["cdsl", "mimic-iv", "esrd", "obstetrics"])
     parser.add_argument("--task", "-t", type=str, required=True, choices=["mortality", "readmission", "sptb"],
                         help="Prediction task type")
     parser.add_argument("--model", type=str, default="deepseek-v3-official",

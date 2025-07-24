@@ -8,7 +8,6 @@ import torch
 import pandas as pd
 from transformers import AutoTokenizer, AutoModel
 
-METHOD_NAME = "ColaCare"
 EMBEDDING_LOG_DIR = "logs"
 DATASET_DIR = "my_datasets"
 
@@ -20,10 +19,13 @@ def parse_args() -> argparse.Namespace:
     """Parses command-line arguments."""
     parser = argparse.ArgumentParser(description="Process EHR and Text data to generate embeddings.")
     parser.add_argument("--model", "-m", type=str, nargs="+", required=True, help="EHR model names for feature extraction.")
-    parser.add_argument("--dataset", "-d", type=str, required=True, choices=["tjh", "mimic-iv", "esrd", "obstetrics"], help="Dataset name.")
+    parser.add_argument("--dataset", "-d", type=str, required=True, choices=["cdsl", "mimic-iv", "esrd", "obstetrics"], help="Dataset name.")
     parser.add_argument("--task", "-t", type=str, required=True, choices=["mortality", "readmission", "los", "sptb"], help="Task name.")
+    parser.add_argument("--framework", "-f", type=str, default="ColaCare", help="Framework name.")
+    parser.add_argument("--backbone_model", "-bm", type=str, default="GatorTron", help="Backbone model to generate reports.")
     parser.add_argument("--language_model", "-lm", type=str, default="GatorTron", help="Language model to encode reports.")
     parser.add_argument("--modality", "-md", type=str, default="ehr", choices=["ehr", "mm"], help="Modality.")
+    parser.add_argument("--use_rag", "-ur", action="store_true", help="Use RAG to generate reports.")
     return parser.parse_args()
 
 def load_ehr_model_outputs(model_names: List[str], dataset: str, task: str) -> Dict[str, list]:
@@ -89,8 +91,9 @@ def generate_text_embeddings_and_scores(pids: List[PatientID], args: argparse.Na
     pid_to_text_data = {}
 
     for pid in pids:
-        report_path = os.path.join(EMBEDDING_LOG_DIR, args.dataset, args.task, METHOD_NAME,
-                                   f"{args.modality}/results", f"ehr_{pid}-result.json")
+        report_path = os.path.join(EMBEDDING_LOG_DIR, args.dataset, args.task, args.framework,
+                                   f"{args.modality}_{args.backbone_model}/results", f"ehr_{pid}-{'result' if args.use_rag else 'worag-result'}.json")
+        print(f"Loading report from {report_path}...")
         if not os.path.exists(report_path):
             print(f"Warning: Report not found for PID {pid}. Skipping.")
             continue
@@ -196,7 +199,7 @@ def main():
             target_dict["ehr_scores"].append(text_data["ehr_scores"])
 
     # 6. Save all results
-    base_save_path = os.path.join(EMBEDDING_LOG_DIR, args.dataset, args.task, METHOD_NAME, args.modality)
+    base_save_path = os.path.join(EMBEDDING_LOG_DIR, args.dataset, args.task, args.framework, f"{args.modality}_{args.backbone_model}")
     save_results(split_datasets, base_save_path)
 
     print("\nProcessing complete.")
