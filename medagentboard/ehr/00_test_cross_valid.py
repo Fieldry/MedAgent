@@ -103,8 +103,8 @@ def run_dl_experiment(config):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", "-m", type=str, nargs="+", required=True, help="Model name (2 or 3 models recommended)")
-    parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name", choices=["tjh", "mimic-iv", "esrd", "obstetrics"])
-    parser.add_argument("--task", "-t", type=str, required=True, help="Task name", choices=["mortality", "readmission", "los", "sptb"])
+    parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name", choices=["cdsl", "mimic-iv", "esrd", "obstetrics"])
+    parser.add_argument("--task", "-t", type=str, required=True, help="Task name", choices=["mortality", "readmission", "sptb"])
 
     # Model and training hyperparameters
     parser.add_argument("--hidden_dim", "-hd", type=int, default=128, help="Hidden dimension")
@@ -155,7 +155,7 @@ if __name__ == "__main__":
         config["lab_dim"] = 32
         config["split"] = "solo"
     else:
-        raise ValueError("Unsupported dataset. Choose either 'tjh' or 'mimic-iv' or 'esrd' or 'obstetrics'.")
+        raise ValueError("Unsupported dataset. Choose either 'cdsl' or 'mimic-iv' or 'esrd' or 'obstetrics'.")
 
     # Load data
     all_labels = []
@@ -167,30 +167,32 @@ if __name__ == "__main__":
     for model in model_names:
         config["model"] = model
 
-        for i in range(10):
-            config["fold"] = i
+        # for i in range(10):
+        #     config["fold"] = i
 
-            # Print the configuration
-            print("Configuration:")
-            for key, value in config.items():
-                print(f"{key}: {value}")
+        #     # Print the configuration
+        #     print("Configuration:")
+        #     for key, value in config.items():
+        #         print(f"{key}: {value}")
 
-            # Run the experiment
-            try:
-                config, perf, outs, threshold = run_dl_experiment(config)
-            except Exception as e:
-                print(f"Error occurred while running the experiment for model {model}.")
-                import traceback
-                traceback.print_exc()
-                continue
+        #     # Run the experiment
+        #     try:
+        #         config, perf, outs, threshold = run_dl_experiment(config)
+        #     except Exception as e:
+        #         print(f"Error occurred while running the experiment for model {model}.")
+        #         import traceback
+        #         traceback.print_exc()
+        #         continue
+        save_dir = os.path.join("logs", f"{args.dataset}/{args.task}/{model}")
+        outs = pd.read_pickle(os.path.join(save_dir, "outputs.pkl"))
 
-            if model == model_names[0]:
-                all_labels.append(outs['labels'])
-            model_preds[model].append(outs['preds'])
-            model_correctness[model].append(outs['preds'] >= threshold)
+        if model == model_names[0]:
+            all_labels.append(np.array(outs['labels']))
+        model_preds[model].append(np.array(outs['preds']))
+        model_correctness[model].append(np.array(outs['preds']) >= 0.5)
 
-            save_dir = os.path.join("logs", f"{args.dataset}/{args.task}/{model}/fold_{i}")
-            pd.to_pickle(outs, os.path.join(save_dir, "outputs.pkl"))
+            # save_dir = os.path.join("logs", f"{args.dataset}/{args.task}/{model}/fold_{i}")
+            # pd.to_pickle(outs, os.path.join(save_dir, "outputs.pkl"))
 
     for model_name in model_names:
         model_preds[model_name] = np.concatenate(model_preds[model_name])
@@ -296,7 +298,7 @@ if __name__ == "__main__":
         transform=plt.gca().transAxes,
         bbox=dict(boxstyle='round,pad=0.5', fc='wheat', alpha=0.5)
     )
-    plt.savefig(os.path.join("logs", f"{args.dataset}/{args.task}/venn_{dataset}_{task}.png"))
+    plt.savefig(os.path.join("logs", f"{args.dataset}/{args.task}/venn_{dataset}_{task}_2.png"))
 
     plt.clf()
 
@@ -324,7 +326,7 @@ if __name__ == "__main__":
     plt.ylabel('Models')
     plt.tight_layout()
 
-    save_path = os.path.join("logs", f"{args.dataset}/{args.task}", f"prediction_values_heatmap_{dataset}_{task}.png")
+    save_path = os.path.join("logs", f"{args.dataset}/{args.task}", f"prediction_values_heatmap_{dataset}_{task}_2.png")
     plt.savefig(save_path, dpi=300)
     print(f"\nPrediction values heatmap saved to {save_path}")
 
