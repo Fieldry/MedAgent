@@ -364,8 +364,11 @@ def main():
             important_features_item.append(process_important_features(x_llm_ts[i][-1], attns[model][i], labtest_features, demo_dim))
         basic_context, last_visit_contexts = generate_prompt(dataset, task, models, basic_data, preds_item, important_features_item, survival_stats, dead_stats)
 
-        ehr_contexts = [basic_context + ehr_context + last_visit_context for last_visit_context in last_visit_contexts]
+        ehr_contexts = [basic_context + ehr_context + last_visit_context for last_visit_context in last_visit_contexts[:3]]
+        ehr_contexts += [basic_context + ehr_context, basic_context + ehr_context + last_visit_contexts[-1]]
         note_context = f"Here is the patient's clinical note data.\n{x_note[i]}\n" if x_note is not None else ""
+
+        assert len(ehr_contexts) == 5, f"The number of ehr contexts should be 5, but got {len(ehr_contexts)}"
 
         if modality == "ehr":
             query = ehr_contexts

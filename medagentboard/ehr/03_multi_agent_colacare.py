@@ -10,9 +10,7 @@ import os
 import json
 import time
 import asyncio
-import asyncio
 import logging
-import argparse
 import argparse
 from tqdm import tqdm
 from enum import Enum
@@ -91,7 +89,6 @@ class BaseAgent:
                 completion = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=[system_message, user_message],
-                    extra_body={"enable_thinking": False},
                     stream=True,
                 )
                 # Handle streaming response
