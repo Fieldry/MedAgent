@@ -1,0 +1,52 @@
+ColaCare:
+    LLM:
+        - deepseek-v3-official
+    Dataset and Task:
+        - cdsl: mortality
+        - mimic-iv: mortality
+        - esrd: mortality
+        - obstetrics: sptb
+        - mimic-iv: readmission
+    Path:
+        - medagentboard.ehr.03_multi_agent_colacare
+    RAG:
+        - true
+        - false
+
+ColaCare:
+    LLM:
+        - deepseek-r1-official
+        - qwen3
+        - claude4
+        - o4-mini
+    Dataset and Task:
+        - mimic-iv: mortality
+        - mimic-iv: readmission
+    Path:
+        - medagentboard.ehr.03_multi_agent_colacare
+    RAG:
+        - true
+
+MedAgent:
+    LLM:
+        - deepseek-v3-official
+    Dataset and Task:
+        - cdsl: mortality
+        - mimic-iv: mortality
+        - esrd: mortality
+        - obstetrics: sptb
+        - mimic-iv: readmission
+    Path:
+        - medagentboard.ehr.03_multi_agent_medagent
+
+ReConcile:
+    LLM:
+        - deepseek-v3-official
+    Dataset and Task:
+        - cdsl: mortality
+        - mimic-iv: mortality
+        - esrd: mortality
+        - obstetrics: sptb
+        - mimic-iv: readmission
+    Path:
+        - medagentboard.ehr.03_multi_agent_reconcile
