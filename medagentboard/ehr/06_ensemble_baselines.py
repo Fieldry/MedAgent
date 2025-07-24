@@ -1,332 +1,297 @@
 import os
-
-import numpy as np
+import argparse
 import pandas as pd
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+
 import lightning as L
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 
+# 假設 pyehr 工具存在於您的環境中
 from pyehr.utils.metrics import get_binary_metrics, check_metric_is_better
 from pyehr.utils.bootstrap import run_bootstrap
 
-
-def ensemble_predictions(logits, method='average', weights=None):
-    if method == 'average':
-        return np.mean(logits, axis=0)
-    elif method == 'weighted_average':
-        return np.average(logits, axis=0, weights=weights)
-    else:
-        raise ValueError("Invalid method specified")
-
-
-def ensemble_baselines_wo_params(config):
-    datasets = [config["dataset"]]
-    models = config["models"]
-    tasks = [config["task"]]
-    pred_path = 'logs'
-    perf_dict = {'method': [], 'dataset': [], 'task': [], 'auroc': [], 'auprc': [], 'minpse': []}
-    for dataset, task in zip(datasets, tasks):
-        labels = None
-        preds = []
-        weighted = []
-        for model in models:
-            pred = pd.read_pickle(os.path.join(pred_path, dataset, task, model, 'outputs.pkl'))['preds']
-            if labels is None:
-                labels = pd.read_pickle(os.path.join(pred_path, dataset, task, model, 'outputs.pkl'))['labels']
-                if not isinstance(pred, np.ndarray):
-                    pred = np.array(pred)
-                if not isinstance(labels, np.ndarray):
-                    labels = np.array(labels)
-                preds.append(pred)
-                metrics = run_bootstrap(pred, labels, {'task': task, 'los_info': None})
-                weighted.append(metrics['auprc']['mean'])
-            perf_dict['method'].append(model)
-            perf_dict['dataset'].append(dataset)
-            perf_dict['task'].append(task)
-            perf_dict['auprc'].append(
-                f"{metrics['auprc']['mean']*100:.2f}±{metrics['auprc']['std']*100:.2f}")
-            perf_dict['auroc'].append(
-                f"{metrics['auroc']['mean']*100:.2f}±{metrics['auroc']['std']*100:.2f}")
-            perf_dict['minpse'].append(
-                f"{metrics['minpse']['mean']*100:.2f}±{metrics['minpse']['std']*100:.2f}")
-        preds = np.array(preds)
-        weighted = np.array(weighted)
-        weighted = weighted / np.sum(weighted)
-        for method in ['average', 'weighted_average']:
-            ensemble = ensemble_predictions(
-                preds, method=method, weights=weighted)
-            metrics = run_bootstrap(ensemble, labels, {'task': task, 'los_info': None})
-            perf_dict['method'].append(method)
-            perf_dict['dataset'].append(dataset)
-            perf_dict['task'].append(task)
-            perf_dict['auprc'].append(
-                f"{metrics['auprc']['mean']*100:.2f}±{metrics['auprc']['std']*100:.2f}")
-            perf_dict['auroc'].append(
-                f"{metrics['auroc']['mean']*100:.2f}±{metrics['auroc']['std']*100:.2f}")
-            perf_dict['minpse'].append(
-                f"{metrics['minpse']['mean']*100:.2f}±{metrics['minpse']['std']*100:.2f}")
-    return pd.DataFrame(perf_dict)
-
+# --- 1. 資料集和資料模組定義 ---
 
 class MyDataset(Dataset):
+    """從預存的 embeddings 中載入資料的自訂資料集"""
     def __init__(self, config, mode):
-        self.data = pd.read_pickle(f'logs/{config["dataset"]}/{config["task"]}/ColaCare/{mode}_embeddings.pkl')["ehr_preds"]
-        self.y = pd.read_pickle(f'logs/{config["dataset"]}/{config["task"]}/ColaCare/{mode}_embeddings.pkl')["labels"]
+        # 根據模式（train/val/test）載入對應的資料
+        file_path = f'logs/{config["dataset"]}/{config["task"]}/ColaCare/ehr_deepseek-v3-official/{mode}_embeddings.pkl'
+        data = pd.read_pickle(file_path)
+        self.data = data["ehr_preds"]
+        self.y = data["labels"]
 
     def __len__(self):
         return len(self.y)
 
     def __getitem__(self, idx):
+        # 返回三個模型的 logits 和對應的標籤
         return self.data[idx][0], self.data[idx][1], self.data[idx][2], self.y[idx]
 
 
 class MyDataModule(L.LightningDataModule):
+    """用於訓練、驗證和測試的 LightningDataModule"""
     def __init__(self, config):
         super().__init__()
+        self.config = config
         self.batch_size = config["batch_size"]
-        self.train_dataset = MyDataset(config, mode="train")
-        self.val_dataset = MyDataset(config, mode="val")
-        self.test_dataset = MyDataset(config, mode="test")
+
+    def setup(self, stage=None):
+        # 在此處設定資料集
+        self.train_dataset = MyDataset(self.config, mode="train")
+        self.val_dataset = MyDataset(self.config, mode="val")
+        self.test_dataset = MyDataset(self.config, mode="test")
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
+        multiprocessing_context='fork' if torch.backends.mps.is_available() else None
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=8, multiprocessing_context=multiprocessing_context)
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+        multiprocessing_context='fork' if torch.backends.mps.is_available() else None
+        return DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=8, multiprocessing_context=multiprocessing_context)
 
     def test_dataloader(self):
-        return DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+        multiprocessing_context='fork' if torch.backends.mps.is_available() else None
+        return DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=8, multiprocessing_context=multiprocessing_context)
 
+
+# --- 2. 模型定義 ---
 
 class TemperatureEnsemble(nn.Module):
-    def __init__(self):
+    """帶有溫度縮放的加權集成模型"""
+    def __init__(self, n_models=3):
         super().__init__()
-        self.temperatures = nn.Parameter(torch.ones(3))
-        self.weights = nn.Parameter(torch.ones(3)/3)
+        # 每個模型一個溫度參數
+        self.temperatures = nn.Parameter(torch.ones(n_models))
+        # 模型的權重
+        self.weights = nn.Parameter(torch.ones(n_models) / n_models)
 
-    def forward(self, logits1, logits2, logits3):
-        scaled_logits = [
-            logits1 / self.temperatures[0],
-            logits2 / self.temperatures[1],
-            logits3 / self.temperatures[2]
-        ]
+    def forward(self, *logits_list):
+        # 溫度縮放
+        scaled_logits = [logits / temp for logits, temp in zip(logits_list, self.temperatures)]
+        # 計算 softmax 權重
         weights = F.softmax(self.weights, dim=0)
-        return F.sigmoid(sum(w * l for w, l in zip(weights, scaled_logits)))
+        # 加權求和
+        ensembled_logits = sum(w * l for w, l in zip(weights, scaled_logits))
+        return torch.sigmoid(ensembled_logits)
 
+
+# --- 3. Lightning 訓練流程 ---
 
 class Pipeline(L.LightningModule):
+    """用於訓練和評估集成模型的 LightningModule"""
     def __init__(self, config):
         super().__init__()
-        self.learning_rate = config["learning_rate"]
-        self.main_metric = config["main_metric"]
-        self.task = config["task"]
-        self.output_dim = 1
-        self.model = TemperatureEnsemble()
+        self.save_hyperparameters()
+        self.config = config
+        self.model = TemperatureEnsemble(n_models=len(config["models"]))
         self.loss_fn = nn.BCELoss()
-
-        self.cur_best_performance = {}  # val set
-        self.test_performance = {}  # test set
+        self.main_metric = config["main_metric"]
+        self.task_type = config["task"]
 
         self.validation_step_outputs = []
         self.test_step_outputs = []
-        self.test_outputs = {}
 
     def forward(self, batch):
-        data1, data2, data3, _ = batch
-        y_hat = self.model(data1, data2, data3).to(data1.device)
-        return y_hat
+        logits1, logits2, logits3, _ = batch
+        return self.model(logits1, logits2, logits3)
 
-    def _get_loss(self, batch):
-        data1, data2, data3, y = batch
-        y_hat = self(batch)
+    def _shared_step(self, batch):
+        *logits, y = batch
+        y_hat = self.model(*logits)
         y = y.to(y_hat.dtype)
         loss = self.loss_fn(y_hat, y)
-        return loss, y_hat
+        return loss, y_hat, y
 
     def training_step(self, batch, batch_idx):
-        loss, _ = self._get_loss(batch)
+        loss, _, _ = self._shared_step(batch)
         self.log("train_loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        ehr, text, y, pid = batch
-        loss, y_hat = self._get_loss(batch)
-        self.log("val_loss", loss)
-        outs = {'y_pred': y_hat, 'y_true': y, 'val_loss': loss}
-        self.validation_step_outputs.append(outs)
-        return loss
+        loss, y_hat, y = self._shared_step(batch)
+        self.log("val_loss", loss, prog_bar=True)
+        self.validation_step_outputs.append({'y_pred': y_hat, 'y_true': y})
 
     def on_validation_epoch_end(self):
-        y_pred = torch.cat([x['y_pred']
-                           for x in self.validation_step_outputs]).detach().cpu()
-        y_true = torch.cat([x['y_true']
-                           for x in self.validation_step_outputs]).detach().cpu()
-        loss = torch.stack(
-            [x['val_loss'] for x in self.validation_step_outputs]).mean().detach().cpu()
-        self.log("val_loss_epoch", loss)
-
+        y_pred = torch.cat([x['y_pred'] for x in self.validation_step_outputs]).cpu()
+        y_true = torch.cat([x['y_true'] for x in self.validation_step_outputs]).cpu()
         metrics = get_binary_metrics(y_pred, y_true)
-        for k, v in metrics.items():
-            self.log(k, v)
-
-        main_score = metrics[self.main_metric]
-        if check_metric_is_better(self.cur_best_performance, self.main_metric, main_score, self.task):
-            self.cur_best_performance = metrics
-            for k, v in metrics.items():
-                self.log("best_"+k, v)
+        self.log_dict({f"val_{k}": v for k, v in metrics.items()})
         self.validation_step_outputs.clear()
-        return main_score
 
     def test_step(self, batch, batch_idx):
-        data1, data2, data3, y = batch
-        loss, y_hat = self._get_loss(batch)
+        loss, y_hat, y = self._shared_step(batch)
         self.log("test_loss", loss)
-        outs = {'y_pred': y_hat, 'y_true': y, 'test_loss': loss}
-        self.test_step_outputs.append(outs)
-        return loss
+        self.test_step_outputs.append({'y_pred': y_hat, 'y_true': y})
 
     def on_test_epoch_end(self):
-        y_pred = torch.cat([x['y_pred']
-                           for x in self.test_step_outputs]).detach().cpu()
-        y_true = torch.cat([x['y_true']
-                           for x in self.test_step_outputs]).detach().cpu()
-        loss = torch.stack([x['test_loss']
-                           for x in self.test_step_outputs]).mean().detach().cpu()
-        self.log("test_loss_epoch", loss)
-
-        test_performance = get_binary_metrics(y_pred, y_true)
-        for k, v in test_performance.items():
-            self.log("test_"+k, v)
-
-        self.test_outputs = {'y_pred': y_pred,
-                             'y_true': y_true, 'test_loss': loss}
+        y_pred = torch.cat([x['y_pred'] for x in self.test_step_outputs]).cpu()
+        y_true = torch.cat([x['y_true'] for x in self.test_step_outputs]).cpu()
+        self.test_outputs = {'preds': y_pred, 'labels': y_true}
+        metrics = get_binary_metrics(y_pred, y_true)
+        self.log_dict({f"test_{k}": v for k, v in metrics.items()})
         self.test_step_outputs.clear()
 
-        self.test_performance = test_performance
-        return test_performance
-
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
-        return optimizer
+        return torch.optim.AdamW(self.parameters(), lr=self.hparams.config["learning_rate"])
 
 
-def run_experiment(config):
+# --- 4. 實驗和評估函數 ---
+
+def run_temperature_ensemble_experiment(config):
+    """訓練和測試 TemperatureEnsemble 模型"""
+    L.seed_everything(config["seed"])
+
     dm = MyDataModule(config)
-
-    # logger
-    logger = CSVLogger(save_dir="logs", flush_logs_every_n_steps=1, name=f'{config["dataset"]}/{config["task"]}/ensemble')
-
-    # main metric
-    main_metric = "auroc" if config["task"] in ["mortality", "readmission", "sptb"] else "mae"
-    mode = "max" if config["task"] in ["mortality", "readmission", "sptb"] else "min"
-    config["main_metric"] = main_metric
-
-    # EarlyStop and checkpoint callback
-    early_stopping_callback = EarlyStopping(monitor=main_metric, patience=config["patience"], mode=mode)
-    checkpoint_callback = ModelCheckpoint(filename="best", monitor=main_metric, mode=mode)
-
-    L.seed_everything(42)  # seed for reproducibility
-
-    # train/val/test
     pipeline = Pipeline(config)
-    trainer = L.Trainer(accelerator="cpu", devices=1, max_epochs=config["epochs"], logger=logger, callbacks=[checkpoint_callback, early_stopping_callback])
-    trainer.fit(pipeline, dm)
 
-    # Load best model checkpoint
+    logger = CSVLogger(save_dir="logs", name=f'{config["dataset"]}/{config["task"]}/temperature_ensemble')
+
+    # 根據任務確定監控的指標和模式
+    mode = "max"
+
+    early_stopping_callback = EarlyStopping(monitor="val_" + config["main_metric"], patience=config["patience"], mode=mode)
+    checkpoint_callback = ModelCheckpoint(filename="best", monitor="val_" + config["main_metric"], mode=mode)
+
+    trainer = L.Trainer(
+        accelerator="cpu",
+        devices=1,
+        max_epochs=config["epochs"],
+        logger=logger,
+        callbacks=[checkpoint_callback, early_stopping_callback]
+    )
+
+    trainer.fit(pipeline, datamodule=dm)
+
+    # 載入最佳模型進行測試
     best_model_path = checkpoint_callback.best_model_path
-    print("best_model_path:", best_model_path)
-    pipeline = Pipeline.load_from_checkpoint(best_model_path, config=config)
-    trainer.test(pipeline, dm)
+    print(f"Loading best model from: {best_model_path}")
+    best_pipeline = Pipeline.load_from_checkpoint(best_model_path, config=config)
+    trainer.test(best_pipeline, datamodule=dm)
 
-    perf = pipeline.test_performance
-    outs = pipeline.test_outputs
-    return perf, outs
+    return best_pipeline.test_outputs
 
 
-def main(config):
-    performance_table = {'method': [], 'dataset': [], 'task': [], 'auroc': [], 'auprc': [], 'minpse': []}
-    _, outs = run_experiment(config)
-    metrics = run_bootstrap(outs['y_pred'], outs['y_true'], {'task': config['task'], 'los_info': None})
-    metrics = {k: f"{v['mean']*100:.2f}±{v['std']*100:.2f}" for k, v in metrics.items()}
-    performance_table['dataset'].append(config['dataset'])
-    performance_table['task'].append(config['task'])
-    performance_table['method'].append('temperature_ensemble')
-    for k, v in metrics.items():
-        performance_table[k].append(v) if k in performance_table else None
+def evaluate_baseline_ensembles(config):
+    """評估 average 和 weighted_average 集成方法"""
+    pred_path = 'logs'
+    labels = None
+    model_preds = []
+    model_auprcs = []
 
-    performance_table = pd.concat([pd.DataFrame(performance_table), ensemble_baselines_wo_params(config)], ignore_index=True)
-    performance_table.to_csv(f'{config["dataset"]}_{config["task"]}_ensemble_metrics.csv', index=False)
+    # 收集單一模型的預測和性能
+    individual_model_perfs = []
+
+    model_output_path = f'logs/{config["dataset"]}/{config["task"]}/ColaCare/ehr_deepseek-v3-official/test_embeddings.pkl'
+    if not os.path.exists(model_output_path):
+        raise FileNotFoundError(f"Output file not found for model {model_name} at {model_output_path}")
+    outputs = pd.read_pickle(model_output_path)
+    preds = np.array(outputs['ehr_preds'])
+    labels = np.array(outputs['labels'])
+
+    for i, model_name in enumerate(config["models"]):
+        model_pred = preds[:, i]
+        model_preds.append(model_pred)
+        metrics = run_bootstrap(model_pred, labels, {'task': config["task"], 'los_info': None})
+        model_auprcs.append(metrics['auprc']['mean'])
+
+        individual_model_perfs.append({
+            'method': model_name,
+            **calculate_formatted_metrics(model_pred, labels, config)
+        })
+
+    # 計算 average 和 weighted_average 集成
+    ensembled_perfs = []
+    model_preds = np.array(model_preds)
+
+    # Average
+    avg_preds = np.mean(model_preds, axis=0)
+    ensembled_perfs.append({
+        'method': 'average',
+        **calculate_formatted_metrics(avg_preds, labels, config)
+    })
+
+    # Weighted Average
+    weights = np.array(model_auprcs) / np.sum(model_auprcs)
+    weighted_avg_preds = np.average(model_preds, axis=0, weights=weights)
+    ensembled_perfs.append({
+        'method': 'weighted_average',
+        **calculate_formatted_metrics(weighted_avg_preds, labels, config)
+    })
+
+    return individual_model_perfs + ensembled_perfs
+
+
+def calculate_formatted_metrics(preds, labels, config):
+    """使用 bootstrap 計算並格式化性能指標"""
+    metrics = run_bootstrap(preds, labels, {'task': config['task'], 'los_info': None})
+    return {
+        'dataset': config['dataset'],
+        'task': config['task'],
+        'auroc': f"{metrics['auroc']['mean']*100:.2f}±{metrics['auroc']['std']*100:.2f}",
+        'auprc': f"{metrics['auprc']['mean']*100:.2f}±{metrics['auprc']['std']*100:.2f}",
+        'minpse': f"{metrics['minpse']['mean']*100:.2f}±{metrics['minpse']['std']*100:.2f}"
+    }
+
+# --- 5. 主執行函數 ---
+
+def parse_args():
+    """解析命令行參數"""
+    parser = argparse.ArgumentParser(description="Train and evaluate ensemble models for EHR data.")
+
+    # 基本配置
+    parser.add_argument("--models", "-m", type=str, nargs="+", default=["AdaCare", "ConCare", "RETAIN"], help="List of models to ensemble.")
+    parser.add_argument("--dataset", "-d", type=str, default="esrd", help="Dataset name.")
+    parser.add_argument("--task", "-t", type=str, default="mortality", help="Task name.")
+
+    # 訓練超參數
+    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate.")
+    parser.add_argument("--batch_size", type=int, default=128, help="Batch size.")
+    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs.")
+    parser.add_argument("--patience", type=int, default=5, help="Patience for early stopping.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+
+    return parser.parse_args()
+
+
+def main():
+    """主函數：運行實驗並產生性能報告"""
+    config = vars(parse_args())
+    config["main_metric"] = "auroc"
+
+    # 1. 運行 Temperature Scaling Ensemble 實驗
+    print("--- Running Temperature Ensemble Experiment ---")
+    ts_outputs = run_temperature_ensemble_experiment(config)
+    ts_perf = {
+        'method': 'temperature_ensemble',
+        **calculate_formatted_metrics(ts_outputs['preds'], ts_outputs['labels'], config)
+    }
+
+    # 2. 評估基線 Ensemble 方法（Average & Weighted Average）
+    print("\n--- Evaluating Baseline Ensemble Methods ---")
+    baseline_perfs = evaluate_baseline_ensembles(config)
+
+    # 3. 合併所有結果並儲存為 CSV
+    all_performances = baseline_perfs + [ts_perf]
+    performance_df = pd.DataFrame(all_performances)
+
+    # 重新排列欄位順序
+    performance_df = performance_df[['method', 'dataset', 'task', 'auroc', 'auprc', 'minpse']]
+
+    # 儲存到指定的 CSV 檔案中
+    output_filename = f'logs/{config["dataset"]}/{config["task"]}/06_ensemble_performance.csv'
+    performance_df.to_csv(output_filename, index=False)
+
+    print(f"\n✅ Performance evaluation saved to {output_filename}")
+    print(performance_df)
 
 
 if __name__ == '__main__':
-    configs = [{
-        'dataset': 'esrd',
-        'task': 'mortality',
-        'models': ['AdaCare', 'ConCare', 'RETAIN'],
-        'model': 'AdaCare',
-        'batch_size': 256,
-        'learning_rate': 1e-3,
-        'main_metric': 'auprc',
-        'epochs': 30,
-        'patience': 10,
-        'fold': 1,
-        'seed': 0,
-        "demo_dim": 0,
-        "lab_dim": 17,
-        "hidden_dim": 128,
-        "output_dim": 1,
-    }, {
-        "model": "AdaCare",
-        'models': ['AdaCare', 'ConCare', 'RETAIN'],
-        "dataset": "mimic-iv",
-        "task": "mortality",
-        "main_metric": "auprc",
-        "patience": 10,
-        "epochs": 30,
-        "batch_size": 256,
-        "learning_rate": 0.001,
-        "demo_dim": 2,
-        "lab_dim": 97,
-        "hidden_dim": 128,
-        "output_dim": 1,
-        'fold': 1,
-        'seed': 0,
-    }, {
-        "model": "ConCare",
-        'models': ['AdaCare', 'ConCare', 'RETAIN'],
-        "dataset": "mimic-iv",
-        "task": "readmission",
-        "main_metric": "auprc",
-        "patience": 10,
-        "epochs": 30,
-        "batch_size": 256,
-        "learning_rate": 0.001,
-        "demo_dim": 2,
-        "lab_dim": 59,
-        "hidden_dim": 128,
-        "output_dim": 1,
-        'fold': 1,
-        'seed': 0,
-    }, {
-        "model": "RETAIN",
-        'models': ['AdaCare', 'ConCare', 'RETAIN'],
-        "dataset": "obstetrics",
-        "task": "sptb",
-        "main_metric": "auprc",
-        "patience": 10,
-        "epochs": 30,
-        "batch_size": 256,
-        "learning_rate": 0.001,
-        "demo_dim": 2,
-        "lab_dim": 59,
-        "hidden_dim": 128,
-        "output_dim": 1,
-        'fold': 1,
-        'seed': 0,
-    },]
-    for config in configs:
-        main(config)
+    main()
