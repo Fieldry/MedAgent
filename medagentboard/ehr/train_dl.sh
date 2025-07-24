@@ -8,8 +8,10 @@ MODEL_OPTIONS=(
 )
 DATASET_TASK_OPTIONS=(
     "esrd:mortality"
+    "obstetrics:sptb"
     "mimic-iv:mortality"
     "mimic-iv:readmission"
+    "cdsl:mortality"
 )
 
 # Compute total runs for progress display
