@@ -179,7 +179,7 @@ def format_input_ehr(
     return detail.strip() + '\n'
 
 
-def load_dataset(root_path: str, dataset: str, task: str, split: str="split") -> Tuple[List, List, List, List, List, List, List, Any]:
+def load_dataset(root_path: str, dataset: str, task: str, split: str="split", mode: str="fusion") -> Tuple[List, List, List, List, List, List, List, Any]:
     """
     Load dataset based on configuration.
 
@@ -190,7 +190,7 @@ def load_dataset(root_path: str, dataset: str, task: str, split: str="split") ->
         Tuple of dataset components
     """
     dataset_path = os.path.join(root_path, f'{dataset}/processed/{split}')
-    data = pd.read_pickle(os.path.join(dataset_path, 'fusion_data.pkl'))
+    data = pd.read_pickle(os.path.join(dataset_path, f'{mode}_data.pkl'))
     ids = [item['id'] for item in data]
     xs = [item['x_ts'] for item in data]
     x_llm_ts = [item['x_llm_ts'] for item in data]
