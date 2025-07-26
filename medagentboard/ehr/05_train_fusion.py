@@ -313,8 +313,8 @@ def parse_args():
     parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name", choices=["cdsl", "mimic-iv", "esrd", "obstetrics"])
     parser.add_argument("--task", "-t", type=str, required=True, help="Task name", choices=["mortality", "readmission", "los", "sptb"])
     parser.add_argument("--method", "-m", type=str, default="ColaCare", help="Method name", choices=["ColaCare", "MedAgent", "ReConcile"])
-    parser.add_argument("--ehr_model_names", "-em", type=str, nargs="+", required=True, help="EHR model names")
-    parser.add_argument("--lm_name", "-lm", type=str, required=True, help="Large Language model name")
+    parser.add_argument("--ehr_model_names", "-em", type=str, nargs="+", default=["AdaCare", "ConCare", "RETAIN"], help="EHR model names")
+    parser.add_argument("--lm_name", "-lm", type=str, default="deepseek-v3-official", help="Large Language model name")
     parser.add_argument("--modality", "-md", type=str, help="Modality", default="ehr", choices=["ehr", "mm"])
     parser.add_argument("--use_rag", "-ur", action="store_true", help="Use RAG to generate reports.")
 
@@ -336,6 +336,9 @@ if __name__ == "__main__":
     args = parse_args()
     config = vars(args)
 
+    log_dir = os.path.join("logs", args.dataset, args.task, args.method, f'{args.modality}_{args.lm_name}', "fusion")
+    os.makedirs(log_dir, exist_ok=True)
+
     fusion_perf_df = pd.DataFrame()
     for fusion_method in ["score", "concat", "attention"]:
         config["fusion_method"] = fusion_method
@@ -356,6 +359,8 @@ if __name__ == "__main__":
         }, **perf_boot)
         perf_df = pd.DataFrame(perf_boot, index=[0])
         fusion_perf_df = pd.concat([fusion_perf_df, perf_df], ignore_index=True)
+
+        pd.to_pickle(outs, os.path.join(log_dir, f"outs_{fusion_method}.pkl"))
 
     ehr_preds = dm.test_dataset.ehr_preds
     ehr_preds = np.array(ehr_preds).transpose(1, 0)
@@ -380,8 +385,6 @@ if __name__ == "__main__":
         perf_df = pd.DataFrame(perf_boot, index=[0])
         ehr_perf_df = pd.concat([ehr_perf_df, perf_df], ignore_index=True)
 
-    log_dir = os.path.join("logs", args.dataset, args.task, args.method, f'{args.modality}_{args.lm_name}', "fusion")
-    os.makedirs(log_dir, exist_ok=True)
     all_perf_df = pd.concat([ehr_perf_df, fusion_perf_df], ignore_index=True)
     all_perf_df.to_csv(os.path.join(log_dir, f"05_fusion_performance_{'w' if args.use_rag else 'worag'}.csv"), index=False)
     print(f"Performance saved to {log_dir}/05_fusion_performance_{'w' if args.use_rag else 'worag'}.csv")
