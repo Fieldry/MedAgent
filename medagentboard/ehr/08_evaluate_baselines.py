@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Process EHR and Text data to generate embeddings.")
     parser.add_argument("--dataset", "-d", type=str, default="esrd", choices=["cdsl", "mimic-iv", "esrd", "obstetrics"], help="Dataset name.")
     parser.add_argument("--task", "-t", type=str, default="mortality", choices=["mortality", "readmission", "los", "sptb"], help="Task name.")
-    parser.add_argument("--framework", "-f", type=str, nargs="+", default=["MedAgent", "ReConcile", "SingleLLM"], help="Framework name.")
+    parser.add_argument("--framework", "-f", type=str, nargs="+", default=["MedAgent", "ReConcile", "ZeroShotLLM", "FewShotLLM"], help="Framework name.")
     return parser.parse_args()
 
 
@@ -40,6 +40,8 @@ def main():
     """Main function to orchestrate the data processing pipeline."""
     args = parse_args()
 
+    print(f"Evaluating {args.dataset} {args.task} with {args.framework}.")
+
     # 1. Load and aggregate EHR model outputs
     test_pids, test_labels = load_dataset(args.dataset, args.task)
 
@@ -59,7 +61,7 @@ def main():
                     preds.append(report_data["case_history"]["final_decision"]["answer"])
                 elif framework == "ReConcile":
                     preds.append(report_data["case_history"]["discussion_history"][-1]["final_prediction"])
-                elif framework == "SingleLLM":
+                elif framework in ["ZeroShotLLM", "FewShotLLM"]:
                     preds.append(report_data["predicted_value"])
                 else:
                     raise ValueError(f"Unsupported framework: {framework}")
