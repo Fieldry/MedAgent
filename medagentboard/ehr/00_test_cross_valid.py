@@ -65,9 +65,9 @@ def run_dl_experiment(config):
     trainer = L.Trainer(accelerator=accelerator, devices=devices, max_epochs=1, logger=logger)
 
     # Load best model checkpoint
-    best_model_path = find_best_model_path(os.path.join("logs", f"{config['dataset']}/{config['task']}/{config['model']}/fold_{config['fold']}/checkpoints"))
+    best_model_path = find_best_model_path(os.path.join("logs", f"{config['dataset']}/{config['task']}/{config['model']}/{version}/checkpoints"))
     if best_model_path is None:
-        raise ValueError(f"No best model found for {config['dataset']}/{config['task']}/{config['model']}/fold_{config['fold']}")
+        raise ValueError(f"No best model found for {config['dataset']}/{config['task']}/{config['model']}/{version}")
     print("best_model_path:", best_model_path)
     pipeline = DlPipeline.load_from_checkpoint(best_model_path, config=config)
     val_loader = dm.val_dataloader()
@@ -161,42 +161,49 @@ if __name__ == "__main__":
     all_labels = []
     model_preds = {model: [] for model in model_names}
     model_correctness = {model: [] for model in model_names}
+    model_attns = {model: [] for model in model_names}
     total_samples = 0
 
     print("Loading and aligning prediction data...")
     for model in model_names:
         config["model"] = model
 
-        # for i in range(10):
-        #     config["fold"] = i
+        for i in range(10):
+            config["fold"] = i
 
-        #     # Print the configuration
-        #     print("Configuration:")
-        #     for key, value in config.items():
-        #         print(f"{key}: {value}")
+            # Print the configuration
+            print("Configuration:")
+            for key, value in config.items():
+                print(f"{key}: {value}")
 
-        #     # Run the experiment
-        #     try:
-        #         config, perf, outs, threshold = run_dl_experiment(config)
-        #     except Exception as e:
-        #         print(f"Error occurred while running the experiment for model {model}.")
-        #         import traceback
-        #         traceback.print_exc()
-        #         continue
-        save_dir = os.path.join("logs", f"{args.dataset}/{args.task}/{model}")
-        outs = pd.read_pickle(os.path.join(save_dir, "outputs.pkl"))
+            # Run the experiment
+            try:
+                config, perf, outs, threshold = run_dl_experiment(config)
+            except Exception as e:
+                print(f"Error occurred while running the experiment for model {model}.")
+                import traceback
+                traceback.print_exc()
+                continue
 
-        if model == model_names[0]:
-            all_labels.append(np.array(outs['labels']))
-        model_preds[model].append(np.array(outs['preds']))
-        model_correctness[model].append(np.array(outs['preds']) >= 0.5)
+            version = f"{config['split']}/fold_{config['fold']}" if "split" in config else f"fold_{config['fold']}"
+            save_dir = os.path.join("logs", f"{args.dataset}/{args.task}/{model}/{version}")
+            os.makedirs(save_dir, exist_ok=True)
+            pd.to_pickle(outs, os.path.join(save_dir, "outputs.pkl"))
+            # outs = pd.read_pickle(os.path.join(save_dir, "outputs.pkl"))
 
-            # save_dir = os.path.join("logs", f"{args.dataset}/{args.task}/{model}/fold_{i}")
-            # pd.to_pickle(outs, os.path.join(save_dir, "outputs.pkl"))
+            if model == model_names[0]:
+                all_labels.append(np.array(outs['labels']))
+            model_preds[model].append(np.array(outs['preds']))
+            model_correctness[model].append(np.array(outs['preds']) >= 0.5)
+            model_attns[model].append(np.array(outs['attns']))
 
     for model_name in model_names:
         model_preds[model_name] = np.concatenate(model_preds[model_name])
         model_correctness[model_name] = np.concatenate(model_correctness[model_name])
+        attns = np.concatenate(model_attns[model_name]).mean(axis=0)
+        attns = attns / np.sum(attns)
+        attns = attns - np.min(attns)
+        model_attns[model_name] = attns
 
     all_labels = np.concatenate(all_labels)
     total_samples = len(all_labels)
@@ -269,7 +276,7 @@ if __name__ == "__main__":
         )
 
         venn3(subsets=subsets, set_labels=model_names)
-        title = f'Prediction Agreement among {", ".join(model_names)} on dataset {dataset} and task {task}'
+        title = f'Prediction Agreement among models on dataset {dataset} and task {task}'
 
     all_correct_count = np.sum(m1_correct & m2_correct & m3_correct)
     all_incorrect_count = np.sum(~m1_correct & ~m2_correct & (~m3_correct if len(model_names) == 3 else True))
@@ -298,12 +305,13 @@ if __name__ == "__main__":
         transform=plt.gca().transAxes,
         bbox=dict(boxstyle='round,pad=0.5', fc='wheat', alpha=0.5)
     )
-    plt.savefig(os.path.join("logs", f"{args.dataset}/{args.task}/venn_{dataset}_{task}_2.png"))
+    plt.savefig(os.path.join("logs", f"{args.dataset}/{args.task}/venn_{dataset}_{task}.png"))
 
     plt.clf()
 
-    # Plot heatmap
+    # Plot prediction heatmap
     plt.figure(figsize=(15, 6))
+    model_preds = dict(labels=all_labels, **model_preds)
     preds_df = pd.DataFrame(model_preds)
 
     sort_by_model = model_names[0]
@@ -316,18 +324,45 @@ if __name__ == "__main__":
         xticklabels=False,
         yticklabels=True,
         cbar=True,
-        cbar_kws={'label': 'Prediction Value (Probability)'}
+        cbar_kws={'label': 'Prediction Value (Probability)'},
+        vmin=0,
+        vmax=1
     )
 
     plt.yticks(rotation=0)
-    title = f'Model Predictions on All Samples ({dataset}/{task})\n(Samples sorted by "{sort_by_model}" predictions)'
+    title = f'Model Predictions of All Samples ({dataset}/{task})\n(Samples sorted by "labels" predictions)'
     plt.title(title, fontsize=16)
     plt.xlabel(f'All {total_samples} Test Samples')
     plt.ylabel('Models')
     plt.tight_layout()
 
-    save_path = os.path.join("logs", f"{args.dataset}/{args.task}", f"prediction_values_heatmap_{dataset}_{task}_2.png")
+    save_path = os.path.join("logs", f"{args.dataset}/{args.task}", f"prediction_heatmap_{dataset}_{task}.png")
     plt.savefig(save_path, dpi=300)
-    print(f"\nPrediction values heatmap saved to {save_path}")
+    print(f"\nPrediction heatmap saved to {save_path}")
+
+    # Plot attention heatmap
+    plt.figure(figsize=(15, 6))
+    attns_df = pd.DataFrame(model_attns)
+    plot_data = attns_df.T
+
+    sns.heatmap(
+        plot_data,
+        cmap='viridis',
+        xticklabels=False,
+        yticklabels=True,
+        cbar=True,
+        cbar_kws={'label': 'Attention Value'}
+    )
+
+    plt.yticks(rotation=0)
+    title = f'Model Attention of All Features ({dataset}/{task})'
+    plt.title(title, fontsize=16)
+    plt.xlabel(f'All {total_samples} Test Samples')
+    plt.ylabel('Models')
+    plt.tight_layout()
+
+    save_path = os.path.join("logs", f"{args.dataset}/{args.task}", f"attention_heatmap_{dataset}_{task}.png")
+    plt.savefig(save_path, dpi=300)
+    print(f"\nAttention heatmap saved to {save_path}")
 
     plt.clf()
