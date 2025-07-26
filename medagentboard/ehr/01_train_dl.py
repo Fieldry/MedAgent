@@ -50,12 +50,18 @@ def run_dl_experiment(config):
     # Load best model checkpoint
     best_model_path = checkpoint_callback.best_model_path
     print("best_model_path:", best_model_path)
+
     pipeline = DlPipeline.load_from_checkpoint(best_model_path, config=config)
     trainer.test(pipeline, dm)
-
     perf = pipeline.test_performance
     outs = pipeline.test_outputs
-    return config, perf, outs
+
+    test_dm = EhrDataModule(dataset_path, task=config["task"], batch_size=config["batch_size"], test_mode="test")
+    trainer.test(pipeline, test_dm)
+    test_perf = pipeline.test_performance
+    test_outs = pipeline.test_outputs
+
+    return config, perf, outs, test_perf, test_outs
 
 
 def parse_args():
@@ -124,6 +130,7 @@ if __name__ == "__main__":
         raise ValueError("Unsupported dataset. Choose either 'mimic-iv' or 'esrd' or 'obstetrics' or 'cdsl'.")
 
     perf_all_df = pd.DataFrame()
+    test_perf_all_df = pd.DataFrame()
     for model in args.model:
         # Add the model name to the configuration
         config["model"] = model
@@ -135,13 +142,14 @@ if __name__ == "__main__":
 
         # Run the experiment
         try:
-            config, perf, outs = run_dl_experiment(config)
+            config, perf, outs, test_perf, test_outs = run_dl_experiment(config)
         except Exception as e:
             print(f"Error occurred while running the experiment for model {model}.")
             print(e)
             continue
 
-        print("Test samples:", len(outs['preds']))
+        print("Fusion samples:", len(outs['preds']))
+        print("Test samples:", len(test_outs['preds']))
 
         # Save the performance and outputs
         save_dir = os.path.join(args.output_root, f"{args.dataset}/{args.task}/{model}")
@@ -155,6 +163,14 @@ if __name__ == "__main__":
             else:
                 perf_boot[key] = f'{value["mean"]:.2f}±{value["std"]:.2f}'
 
+        test_perf_boot = run_bootstrap(test_outs['preds'], test_outs['labels'], config)
+        for key, value in test_perf_boot.items():
+            if args.task in ["mortality", "readmission", "sptb"]:
+                test_perf_boot[key] = f'{value["mean"] * 100:.2f}±{value["std"] * 100:.2f}'
+            else:
+                test_perf_boot[key] = f'{value["mean"]:.2f}±{value["std"]:.2f}'
+
+
         # Save performance and outputs
         perf_boot = dict({
             "model": model,
@@ -164,15 +180,18 @@ if __name__ == "__main__":
         perf_df = pd.DataFrame(perf_boot, index=[0])
         perf_df.to_csv(os.path.join(save_dir, "performance.csv"), index=False)
         pd.to_pickle(outs, os.path.join(save_dir, "outputs.pkl"))
-        print(f"Performance and outputs saved to {save_dir}")
 
-        # Append performance to the all performance DataFrame
+        test_perf_boot = dict({
+            "model": model,
+            "dataset": args.dataset,
+            "task": args.task,
+        }, **test_perf_boot)
+        test_perf_df = pd.DataFrame(test_perf_boot, index=[0])
+        test_perf_df.to_csv(os.path.join(save_dir, "test_performance.csv"), index=False)
+        pd.to_pickle(test_outs, os.path.join(save_dir, "test_outputs.pkl"))
+
         perf_all_df = pd.concat([perf_all_df, perf_df], ignore_index=True)
+        test_perf_all_df = pd.concat([test_perf_all_df, test_perf_df], ignore_index=True)
 
-    # Save all performance
-    try:
-        perf_all_df.to_csv(os.path.join(args.output_root, f"{args.dataset}/{args.task}/all_performance.csv"), index=False)
-        print(f"All performances saved to {os.path.join(args.output_root, f'{args.dataset}/{args.task}/all_performance.csv')}")
-    except Exception as e:
-        print(e)
-    print("All experiments completed.")
+    perf_all_df.to_csv(os.path.join(args.output_root, f"{args.dataset}/{args.task}/all_performance.csv"), index=False)
+    test_perf_all_df.to_csv(os.path.join(args.output_root, f"{args.dataset}/{args.task}/all_test_performance.csv"), index=False)
