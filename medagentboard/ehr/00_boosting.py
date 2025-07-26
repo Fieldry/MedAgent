@@ -1,6 +1,7 @@
 import os
 import argparse
 import shutil
+from pathlib import Path
 
 import pandas as pd
 import torch
@@ -19,12 +20,12 @@ def run_single_boost_round(config, boost_round, sample_weights=None):
     print(f"\n{'='*20} Starting Boosting Round {boost_round + 1}/{config['n_estimators']} {'='*20}")
 
     # --- Data ---
-    dataset_path = f'my_datasets/ehr/{config["dataset"]}/processed/fold_{config["fold"]}'
+    dataset_path = f'my_datasets/ehr/{config["dataset"]}/processed/split'
     dm = EhrDataModule(dataset_path, task=config["task"], batch_size=config["batch_size"], train_sample_weights=sample_weights)
 
     # --- Logger ---
-    version_str = f"{config['model']}_boost_round_{boost_round}"
-    logger = CSVLogger(save_dir="logs", name=f'{config["dataset"]}/{config["task"]}', version=version_str)
+    version_str = f"boost_round_{boost_round}"
+    logger = CSVLogger(save_dir="logs", name=f'{config["dataset"]}/{config["task"]}/{config["model"]}_boosting/fold_{config["fold"]}', version=version_str)
 
     # --- Callbacks ---
     main_metric = config["main_metric"]
@@ -74,7 +75,7 @@ def run_boosting_experiment(config):
     """
     # Initialize uniform sample weights
     # We need to know the size of the training set first
-    temp_dm = EhrDataModule(f'my_datasets/ehr/{config["dataset"]}/processed/fold_{config["fold"]}', task=config["task"], batch_size=config["batch_size"])
+    temp_dm = EhrDataModule(f'my_datasets/ehr/{config["dataset"]}/processed/split', task=config["task"], batch_size=config["batch_size"])
     temp_dm.setup('fit')
     n_train_samples = len(temp_dm.train_dataset)
     sample_weights = torch.full((n_train_samples,), 1.0 / n_train_samples)
@@ -115,7 +116,7 @@ def run_boosting_experiment(config):
         # For classification tasks
         if config["task"] in ["mortality", "readmission", "sptb"]:
             # Convert logits to predictions (0 or 1)
-            predictions = (preds_tensor > 0.5).float()
+            predictions = (preds_tensor > 0.3).float()
 
             # Identify misclassified samples
             is_wrong = (predictions != labels_tensor).float()
@@ -158,7 +159,7 @@ def run_boosting_experiment(config):
     top_3_members = sorted_members[:3]
 
     # Create a directory to save the top 3 checkpoints
-    save_dir = os.path.join(config["output_root"], f"{config['dataset']}/{config['task']}/{config['model']}", "top_3_boosted_models")
+    save_dir = os.path.join(config["output_root"], f"{config['dataset']}/{config['task']}/{config['model']}_boosting/fold_{config['fold']}", "top_3_boosted_models")
     os.makedirs(save_dir, exist_ok=True)
 
     print(f"Saving top 3 models to: {save_dir}")
@@ -179,7 +180,7 @@ def run_boosting_experiment(config):
         trainer.test(pipeline, temp_dm)
         perf = pipeline.test_performance
         outs = pipeline.test_outputs
-        pd.to_pickle(outs, os.path.join(save_dir, f"rank_{rank}_round_{member['round']}_test_outs.pkl"))
+        pd.to_pickle(outs, os.path.join(Path(original_path).resolve().parent.parent, f"outputs.pkl"))
 
         # Also save performance for easy reference
         performance_summary.append({
@@ -232,10 +233,9 @@ if __name__ == "__main__":
         "n_estimators": args.n_estimators,
         "output_root": args.output_root,
         "main_metric": "auroc",
-        "fold": 0
+        "fold": 2
     }
 
-    dataset_path = f'my_datasets/ehr/{config["dataset"]}/processed/fold_{config["fold"]}'
     config["los_info"] = None
 
     if args.dataset == "mimic-iv":
