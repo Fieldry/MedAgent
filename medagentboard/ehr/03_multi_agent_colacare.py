@@ -1176,6 +1176,7 @@ async def main():
                         help="Models used for doctor agents. Provide one model name per doctor.")
     parser.add_argument("--evaluate_model", type=str, default="deepseek-v3-official", help="Model used for evaluator agent")
     parser.add_argument("--use_rag", action="store_true", default=False, help="Whether to use RAG for the doctor agents")
+    parser.add_argument("--start_index", type=int, default=0, help="Specify the starting index of the data chunk to process.")
     args = parser.parse_args()
 
     method = "ColaCare" # ColaCare by default
@@ -1219,6 +1220,22 @@ async def main():
     data = load_json(data_path)
     print(f"Loaded {len(data)} samples from {data_path}")
 
+    # --- 修改数据处理逻辑 ---
+    # 根据 start_index 和固定的块大小（20）对数据进行切片
+    data_to_process = []
+    if args.start_index is not None:
+        chunk_size = 100  # 每个进程处理20个样本
+        start = args.start_index
+        end = start + chunk_size
+        data_to_process = data[start:end]
+        if not data_to_process:
+            print(f"No data to process for start_index {start}. The dataset might have ended. Exiting gracefully.")
+            return
+        print(f"Processing a chunk of {len(data_to_process)} samples from index {start} to {end-1}.")
+    else:
+        data_to_process = data # 如果没有提供 start_index，则处理全部数据
+        print("No start_index provided, processing all available samples.")
+
     # Create doctor configurations, assigning the determined specialty
     doctor_configs = []
 
@@ -1231,7 +1248,7 @@ async def main():
     print(f"Configuring {len(doctor_configs)} doctors with models: {[cfg['model_key'] for cfg in doctor_configs]} and specialty: {dataset_specialty}")
 
     # Process each item
-    for item in tqdm(data, total=len(data), desc=f"Running MDT consultation on {dataset_name} {task_type}"):
+    for item in tqdm(data_to_process, total=len(data_to_process), desc=f"Running MDT on {dataset_name} chunk starting at {args.start_index}"):
         qid = item["qid"]
         question = item["question"]
         label = item.get("ground_truth")
