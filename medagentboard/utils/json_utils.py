@@ -1,7 +1,28 @@
 import json
 import os
 import re
-from typing import Any, List, Dict, Union, Optional, Iterator
+import logging
+from typing import Any, List, Dict, Iterator
+
+def get_logger(log_path: str) -> logging.Logger:
+    """
+    Configures and returns a logger instance to write logs to a file.
+
+    Args:
+        log_path: The file path where the log will be saved.
+
+    Returns:
+        A configured logging.Logger instance.
+    """
+    logger = logging.getLogger(log_path)
+    logger.setLevel(logging.INFO)
+    # Prevent adding duplicate handlers
+    if not logger.handlers:
+        fh = logging.FileHandler(log_path, encoding='utf-8')
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+    return logger
 
 def save_json(data: Any, filepath: str, indent: int = 2) -> None:
     """
@@ -160,19 +181,96 @@ def update_json(filepath: str, new_data: Any) -> None:
     save_json(existing_data, filepath)
     print(f"Updated file: {filepath}")
 
-def preprocess_response_string(response_text: str) -> str:
-    if response_text.startswith('```json') and response_text.endswith('```'):
-        response_text = response_text[7:-3].strip()
-    elif response_text.startswith('```') and response_text.endswith('```'):
-        response_text = response_text[3:-3].strip()
-    response_text = response_text.replace("```", "").replace("json", "").strip()
-    # Remove blank characters except for blank space
-    response_text = re.sub(r'\s+', ' ', response_text)
-    # Remove trailing commas
-    response_text = re.sub(r',\s*}', '}', response_text)
-    response_text = re.sub(r',\s*]', ']', response_text)
-    # Match string in {} using regex
-    match = re.search(r'\{.*?\}$', response_text)
-    if match:
-        response_text = match.group(0).strip()
-    return response_text
+def preprocess_response_string(response_string: str) -> str:
+    """
+    Cleans and prepares a raw LLM response string for JSON parsing.
+    It removes markdown code blocks and trailing commas.
+
+    Args:
+        response_string: The raw string response from the LLM.
+
+    Returns:
+        A cleaned string ready for JSON parsing.
+    """
+    # Remove markdown JSON code blocks
+    cleaned_string = re.sub(r'```json\s*|\s*```', '', response_string.strip())
+    # Remove trailing commas that can cause JSON parsing errors
+    cleaned_string = re.sub(r',\s*([}\]])', r'\1', cleaned_string)
+    return cleaned_string
+
+def parse_structured_output(response_text: str) -> Dict[str, Any]:
+    """
+    Robustly parses an LLM response to extract a structured dictionary.
+    First, it tries to parse the text as clean JSON. If that fails, it uses
+    line-by-line parsing as a fallback.
+
+    Args:
+        response_text: The text response from the LLM.
+
+    Returns:
+        A dictionary containing the parsed fields.
+    """
+    try:
+        # Try parsing as JSON first
+        return json.loads(preprocess_response_string(response_text))
+    except json.JSONDecodeError:
+        # Fallback to line-by-line parsing if JSON is invalid
+        result = {}
+        lines = response_text.strip().split('\n')
+        for line in lines:
+            if ":" in line:
+                key, value = line.split(":", 1)
+                # Clean up key and value
+                key = key.strip().lower().replace("\"", "")
+                value = value.strip().replace("\"", "")
+                result[key] = value
+
+        # Ensure essential fields exist with default values
+        if "prediction" not in result and "answer" not in result:
+            result["prediction"] = 0.5
+        if "explanation" not in result and "reasoning" not in result and "reason" not in result:
+            result["explanation"] = "No structured explanation found in response."
+
+        return result
+
+def parse_structured_output_for_final_report(response_text: str) -> Dict[str, Any]:
+    """
+    A fallback parser specifically for the final report evaluation agent's response.
+    It extracts scores and reasons for different dimensions.
+
+    Args:
+        response_text: The raw response from the evaluation LLM.
+
+    Returns:
+        A dictionary with structured evaluation results.
+    """
+    result = {
+        "accuracy": {"score": 1, "reason": "Could not parse response."},
+        "safety": {"score": 1, "reason": "Could not parse response."},
+        "explainability": {"score": 1, "reason": "Could not parse response."},
+    }
+    lines = response_text.split('\n')
+    current_dim = None
+
+    for line in lines:
+        line_lower = line.strip().lower()
+        if "accuracy:" in line_lower:
+            current_dim = "accuracy"
+        elif "safety:" in line_lower:
+            current_dim = "safety"
+        elif "explainability:" in line_lower:
+            current_dim = "explainability"
+
+        if current_dim:
+            if "score:" in line_lower:
+                try:
+                    score_str = line.split(":", 1)[1].strip().split(" ")[0]
+                    score = int(float(score_str)) # Handle floats like 4.0
+                    result[current_dim]["score"] = max(1, min(5, score))
+                except (ValueError, IndexError):
+                    pass # Keep default score
+            if "reason:" in line_lower:
+                reason = line.split(":", 1)[1].strip()
+                result[current_dim]["reason"] = reason
+
+    return result
