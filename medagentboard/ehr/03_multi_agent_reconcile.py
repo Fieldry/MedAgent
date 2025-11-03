@@ -1,110 +1,50 @@
-"""
-medagentboard/ehr/multi_agent_reconcile.py
-
-This module implements the Reconcile framework for multi-model,
-multi-agent discussion for EHR predictive modeling tasks. Each agent generates
-a prediction with step-by-step reasoning and an estimated confidence level.
-Then, the agents engage in multi-round discussions and a confidence-weighted
-aggregation produces the final team prediction.
-"""
+# multi_agent_reconcile.py
 
 import os
 import json
 import time
 import numpy as np
-from enum import Enum
-from typing import Dict, List, Any, Optional, Union, Tuple
 import argparse
 from tqdm import tqdm
+from enum import Enum
+from typing import Dict, List, Any
 
-# Import utilities
+from openai import OpenAI
+
 from medagentboard.utils.llm_configs import LLM_MODELS_SETTINGS
-from medagentboard.utils.json_utils import load_json, save_json, preprocess_response_string
 from medagentboard.utils import prompt_template
+from medagentboard.utils.json_utils import get_logger, preprocess_response_string, save_json, load_json, parse_structured_output_for_final_report
 
-
-###############################################################################
-# Discussion Phase Enumeration
-###############################################################################
 class DiscussionPhase(Enum):
     """Enumeration of discussion phases in the Reconcile framework."""
-    INITIAL = "initial"        # Initial prediction generation
-    DISCUSSION = "discussion"  # Multi-round discussion
-    FINAL = "final"            # Final team prediction
+    INITIAL = "initial"
+    DISCUSSION = "discussion"
+    FINAL = "final"
 
-
-###############################################################################
-# ReconcileAgent: an LLM agent for the Reconcile framework
-###############################################################################
 class ReconcileAgent:
-    """
-    An agent participating in the Reconcile framework for EHR prediction.
-
-    Each agent uses a specified LLM model to generate a prediction,
-    detailed reasoning, and an estimated confidence level (between 0.0 and 1.0).
-
-    Attributes:
-        agent_id: Unique identifier for the agent
-        model_key: Key of the LLM model in LLM_MODELS_SETTINGS
-        model_name: Name of the model used by this agent
-        client: OpenAI-compatible client for making API calls
-        discussion_history: List of agent's responses throughout the discussion
-        memory: Agent's memory of the case
-    """
+    """An agent participating in the Reconcile framework for EHR prediction."""
     def __init__(self, agent_id: str, model_key: str):
-        """
-        Initialize a Reconcile agent.
-
-        Args:
-            agent_id: Unique identifier for the agent
-            model_key: Key of the LLM model in LLM_MODELS_SETTINGS
-
-        Raises:
-            ValueError: If model_key is not found in LLM_MODELS_SETTINGS
-        """
+        """Initializes a Reconcile agent."""
         self.agent_id = agent_id
         self.model_key = model_key
-        self.discussion_history = []
         self.memory = []
 
         if model_key not in LLM_MODELS_SETTINGS:
             raise ValueError(f"Model key '{model_key}' not configured in LLM_MODELS_SETTINGS")
-        self.model_config = LLM_MODELS_SETTINGS[model_key]
 
-        # Set up the LLM client using the OpenAI-based client
-        try:
-            from openai import OpenAI
-        except ImportError as e:
-            raise ImportError("OpenAI client is not installed. Please install it.") from e
-
-        self.client = OpenAI(
-            api_key=self.model_config["api_key"],
-            base_url=self.model_config["base_url"],
-        )
-        self.model_name = self.model_config["model_name"]
+        model_config = LLM_MODELS_SETTINGS[model_key]
+        self.client = OpenAI(api_key=model_config["api_key"], base_url=model_config["base_url"])
+        self.model_name = model_config["model_name"]
         print(f"Initialized agent {self.agent_id} with model {self.model_name}")
 
     def call_llm(self, messages: List[Dict[str, Any]], max_retries: int = 3) -> str:
-        """
-        Call the LLM with the provided messages and a retry mechanism.
-
-        Args:
-            messages: List of messages (each as a dictionary) to send to the LLM
-            max_retries: Maximum number of retry attempts
-
-        Returns:
-            The text content from the LLM response
-        """
+        """Calls the LLM with provided messages and a retry mechanism."""
         attempt = 0
-        wait_time = 1
-
         while attempt < max_retries:
             try:
-                print(f"Agent {self.agent_id} calling LLM with model {self.model_name} (attempt {attempt+1}/{max_retries})")
+                print(f"Agent {self.agent_id} calling LLM (attempt {attempt+1}/{max_retries})")
                 completion = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=messages,
-                    response_format={"type": "json_object"}
+                    model=self.model_name, messages=messages, response_format={"type": "json_object"}
                 )
                 response_text = completion.choices[0].message.content
                 print(f"Agent {self.agent_id} received response: {response_text[:100]}...")
@@ -112,709 +52,169 @@ class ReconcileAgent:
             except Exception as e:
                 attempt += 1
                 print(f"Agent {self.agent_id} LLM call attempt {attempt}/{max_retries} failed: {e}")
-                if attempt < max_retries:
-                    print(f"Waiting {wait_time} seconds before retry...")
-                    time.sleep(wait_time)
+                if attempt < max_retries: time.sleep(1)
 
-        # If all retries fail, return an error JSON message
         print(f"Agent {self.agent_id} all LLM call attempts failed, returning default response")
-        return json.dumps({
-            "reasoning": "LLM call failed after multiple attempts",
-            "prediction": 0.5,
-            "confidence": 0.0
-        })
+        return json.dumps({"reasoning": "LLM call failed", "prediction": 0.5, "confidence": 0.0})
 
     def generate_initial_response(self, question: str) -> Dict[str, Any]:
-        """
-        Generate an initial prediction for the EHR time series data.
-
-        Args:
-            question: The input question containing EHR data and prediction task
-
-        Returns:
-            A dictionary containing reasoning, prediction, and confidence
-        """
+        """Generates an initial prediction for the EHR time series data."""
         print(f"Agent {self.agent_id} generating initial response")
-
-        # Construct system message
-        system_message = {
-            "role": "system",
-            "content": (
-                "You are a medical expert specializing in analyzing electronic health records (EHR) "
-                "and making clinical predictions. Analyze the following patient data "
-                "and provide a clear prediction along with detailed step-by-step reasoning. "
-                "Based on your understanding, estimate your confidence in your prediction "
-                "on a scale from 0.0 to 1.0, where 1.0 means complete certainty."
-            )
-        }
-
-        # Construct user message
-        prompt_text = (
-            f"{question}\n\n"
-            f"Provide your response in JSON format with the following fields:\n"
-            f"- 'reasoning': your detailed step-by-step analysis of the patient data\n"
-            f"- 'prediction': a floating-point number between 0 and 1 representing the predicted probability\n"
-            f"- 'confidence': a number between 0.0 and 1.0 representing your confidence level in your prediction\n\n"
-            f"Ensure your JSON is properly formatted."
-        )
-
-        user_message = {
-            "role": "user",
-            "content": prompt_text
-        }
-
-        # Call LLM and parse response
+        system_message = {"role": "system", "content": "You are a medical expert analyzing EHR data. Provide a prediction, detailed reasoning, and a confidence score (0.0 to 1.0)."}
+        user_message = {"role": "user", "content": f"{question}\n\nProvide your response in JSON format with fields: 'reasoning', 'prediction', 'confidence'."}
         response_text = self.call_llm([system_message, user_message])
         result = self._parse_response(response_text)
-
-        # Store in agent's memory
-        self.memory.append({
-            "phase": DiscussionPhase.INITIAL.value,
-            "response": result
-        })
-
+        self.memory.append({"phase": DiscussionPhase.INITIAL.value, "response": result})
         return result
 
     def generate_discussion_response(self, question: str, discussion_prompt: str) -> Dict[str, Any]:
-        """
-        Generate a response during the discussion phase.
-
-        Args:
-            question: The original question with EHR data
-            discussion_prompt: The formatted discussion prompt with other agents' responses
-
-        Returns:
-            A dictionary containing reasoning, prediction, and confidence
-        """
+        """Generates a response during the discussion phase."""
         print(f"Agent {self.agent_id} generating discussion response")
-
-        # Construct system message
-        system_message = {
-            "role": "system",
-            "content": (
-                "You are a medical expert participating in a multi-agent discussion about "
-                "electronic health records (EHR) analysis. Review the opinions from other experts, "
-                "then provide your updated analysis. You may adjust your prediction if others' "
-                "reasoning convinces you, or defend your position with clear explanations. "
-                "Estimate your confidence in your prediction on a scale from 0.0 to 1.0."
-            )
-        }
-
-        # Construct user message
-        prompt_text = (
-            f"Original patient data and task:\n{question}\n\n"
-            f"Discussion from other experts:\n{discussion_prompt}\n\n"
-            f"Based on this discussion, provide your updated analysis in JSON format with the following fields:\n"
-            f"- 'reasoning': your detailed step-by-step analysis of the patient data\n"
-            f"- 'prediction': a floating-point number between 0 and 1 representing the predicted probability\n"
-            f"- 'confidence': a number between 0.0 and 1.0 representing your confidence level in your prediction\n\n"
-            f"Ensure your JSON is properly formatted."
-        )
-
-        user_message = {
-            "role": "user",
-            "content": prompt_text
-        }
-
-        # Call LLM and parse response
+        system_message = {"role": "system", "content": "You are a medical expert in a multi-agent discussion. Review others' opinions, then provide your updated analysis, prediction, and confidence."}
+        user_message = {"role": "user", "content": f"Original Task:\n{question}\n\nDiscussion:\n{discussion_prompt}\n\nProvide your updated analysis in JSON format: 'reasoning', 'prediction', 'confidence'."}
         response_text = self.call_llm([system_message, user_message])
         result = self._parse_response(response_text)
-
-        # Determine the current round number
         current_round = sum(1 for mem in self.memory if mem["phase"] == DiscussionPhase.DISCUSSION.value) + 1
-
-        # Store in agent's memory
-        self.memory.append({
-            "phase": DiscussionPhase.DISCUSSION.value,
-            "round": current_round,
-            "response": result
-        })
-
+        self.memory.append({"phase": DiscussionPhase.DISCUSSION.value, "round": current_round, "response": result})
         return result
 
     def _parse_response(self, response_text: str) -> Dict[str, Any]:
-        """
-        Parse the LLM response into a structured format.
-
-        Args:
-            response_text: The raw response text from the LLM
-
-        Returns:
-            A dictionary with reasoning, prediction, and confidence
-        """
+        """Parses the LLM response into a structured format."""
         try:
             result = json.loads(preprocess_response_string(response_text))
-
-            # Validate required fields
-            if "reasoning" not in result:
-                result["reasoning"] = "No reasoning provided"
-
-            if "prediction" not in result:
-                result["prediction"] = 0.5
-            else:
-                # Ensure prediction is a float between 0 and 1
-                try:
-                    result["prediction"] = float(result["prediction"])
-                    result["prediction"] = max(0.0, min(1.0, result["prediction"]))
-                except (ValueError, TypeError):
-                    result["prediction"] = 0.5
-
-            if "confidence" not in result:
-                result["confidence"] = 0.0
-            else:
-                # Ensure confidence is a float between 0 and 1
-                try:
-                    result["confidence"] = float(result["confidence"])
-                    result["confidence"] = max(0.0, min(1.0, result["confidence"]))
-                except (ValueError, TypeError):
-                    result["confidence"] = 0.0
-
+            result["reasoning"] = result.get("reasoning", "No reasoning provided")
+            result["prediction"] = max(0.0, min(1.0, float(result.get("prediction", 0.5))))
+            result["confidence"] = max(0.0, min(1.0, float(result.get("confidence", 0.0))))
             return result
-
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError, TypeError):
             print(f"Agent {self.agent_id} failed to parse JSON response: {response_text[:100]}...")
+            return {"reasoning": response_text, "prediction": 0.5, "confidence": 0.0}
 
-            # Attempt to extract with simple parsing
-            reasoning = ""
-            prediction = 0.5
-            confidence = 0.0
-
-            lines = response_text.split('\n')
-            for line in lines:
-                if line.lower().startswith("reasoning:"):
-                    reasoning = line.split(":", 1)[1].strip()
-                elif line.lower().startswith("prediction:"):
-                    try:
-                        prediction = float(line.split(":", 1)[1].strip())
-                        prediction = max(0.0, min(1.0, prediction))
-                    except (ValueError, IndexError):
-                        prediction = 0.5
-                elif line.lower().startswith("confidence:"):
-                    try:
-                        confidence = float(line.split(":", 1)[1].strip())
-                        confidence = max(0.0, min(1.0, confidence))
-                    except (ValueError, IndexError):
-                        confidence = 0.0
-
-            # If basic parsing doesn't work, use the raw text
-            if not reasoning:
-                reasoning = response_text
-
-            return {
-                "reasoning": reasoning,
-                "prediction": prediction,
-                "confidence": confidence
-            }
-
-
-###############################################################################
-# ReconcileCoordinator: orchestrates the multi-agent discussion process
-###############################################################################
 class ReconcileCoordinator:
-    """
-    The coordinator for the Reconcile framework in EHR prediction tasks.
-
-    This class orchestrates the following phases:
-    1. Initial Prediction Generation: Each agent generates an initial prediction.
-    2. Multi-Round Discussion: Agents update their predictions based on the grouped responses.
-    3. Team Prediction Generation: A confidence-weighted aggregation produces the final prediction.
-
-    Attributes:
-        agents: List of ReconcileAgent objects participating in the discussion
-        max_rounds: Maximum number of discussion rounds
-    """
+    """The coordinator for the Reconcile framework in EHR prediction tasks."""
     def __init__(self, agent_configs: List[Dict[str, str]], max_rounds: int = 3):
-        """
-        Initialize the Reconcile coordinator.
-
-        Args:
-            agent_configs: List of agent configurations (each with agent_id and model_key)
-            max_rounds: Maximum number of discussion rounds
-        """
-        # Instantiate Reconcile agents using provided configurations
-        self.agents = [
-            ReconcileAgent(cfg["agent_id"], cfg["model_key"])
-            for cfg in agent_configs
-        ]
+        """Initializes the Reconcile coordinator."""
+        self.agents = [ReconcileAgent(cfg["agent_id"], cfg["model_key"]) for cfg in agent_configs]
         self.max_rounds = max_rounds
         print(f"Initialized ReconcileCoordinator with {len(self.agents)} agents, max_rounds={max_rounds}")
 
     def _group_predictions(self, predictions: List[Dict[str, Any]]) -> str:
-        """
-        Group and summarize predictions from agents.
-
-        Args:
-            predictions: List of agent response dictionaries
-
-        Returns:
-            A formatted string with grouped predictions and their supporting explanations
-        """
-        # Define groups based on prediction ranges
-        groups = {
-            "low_risk": {"range": (0.0, 0.33), "count": 0, "explanations": [], "avg_pred": 0.0, "confidence_sum": 0.0},
-            "medium_risk": {"range": (0.33, 0.67), "count": 0, "explanations": [], "avg_pred": 0.0, "confidence_sum": 0.0},
-            "high_risk": {"range": (0.67, 1.0), "count": 0, "explanations": [], "avg_pred": 0.0, "confidence_sum": 0.0}
-        }
-
-        # Group predictions and explanations
+        """Groups and summarizes predictions from agents."""
+        groups = {"low_risk": [], "medium_risk": [], "high_risk": []}
         for pred in predictions:
-            prediction_value = pred.get("prediction", 0.5)
-            confidence = pred.get("confidence", 0.0)
-            reasoning = pred.get("reasoning", "")
+            p_val = pred.get("prediction", 0.5)
+            if p_val < 0.33: groups["low_risk"].append(pred)
+            elif p_val < 0.67: groups["medium_risk"].append(pred)
+            else: groups["high_risk"].append(pred)
 
-            # Determine which group this prediction belongs to
-            for group_name, group_data in groups.items():
-                lower, upper = group_data["range"]
-                if lower <= prediction_value < upper or (group_name == "high_risk" and prediction_value == upper):
-                    group_data["count"] += 1
-                    group_data["explanations"].append(reasoning)
-                    group_data["avg_pred"] += prediction_value
-                    group_data["confidence_sum"] += confidence
-                    break
-
-        # Format grouped predictions
         grouped_str = ""
-        for group_name, data in groups.items():
-            if data["count"] > 0:
-                avg_pred = data["avg_pred"] / data["count"]
-                avg_confidence = data["confidence_sum"] / data["count"] if data["count"] > 0 else 0
-
-                grouped_str += f"Prediction Group: {group_name.replace('_', ' ').title()} (Range: {data['range'][0]:.2f}-{data['range'][1]:.2f})\n"
-                grouped_str += f"Number of experts in this group: {data['count']}\n"
-                grouped_str += f"Average prediction: {avg_pred:.3f}\n"
-                grouped_str += f"Average confidence: {avg_confidence:.2f}\n"
-                grouped_str += f"Explanations from this group:\n"
-
-                # Add each explanation with a bullet point
-                for i, exp in enumerate(data["explanations"]):
-                    # Truncate very long explanations
-                    if len(exp) > 500:
-                        exp = exp[:500] + "... (truncated)"
-                    grouped_str += f"• Expert {i+1}: {exp}\n"
-
-                grouped_str += "\n"
-
+        for name, data in groups.items():
+            if data:
+                avg_pred = sum(p['prediction'] for p in data) / len(data)
+                avg_conf = sum(p['confidence'] for p in data) / len(data)
+                explanations = "\n".join([f"• Expert: {p['reasoning'][:300]}..." for p in data])
+                grouped_str += f"Prediction Group: {name.replace('_', ' ').title()}\n"
+                grouped_str += f"Experts in group: {len(data)}, Avg Prediction: {avg_pred:.3f}, Avg Confidence: {avg_conf:.2f}\n"
+                grouped_str += f"Explanations:\n{explanations}\n\n"
         return grouped_str.strip()
 
-    def _consensus_threshold(self, predictions: List[float]) -> bool:
-        """
-        Check if predictions have reached a reasonable consensus.
-
-        Args:
-            predictions: List of prediction values
-
-        Returns:
-            True if consensus reached, False otherwise
-        """
-        if not predictions:
-            return False
-
-        # Calculate standard deviation of predictions
-        std_dev = np.std(predictions)
-
-        # If standard deviation is below threshold, consider it a consensus
-        return std_dev < 0.1  # Threshold can be adjusted based on desired sensitivity
+    def _consensus_reached(self, predictions: List[float]) -> bool:
+        """Checks if predictions have reached a reasonable consensus."""
+        return np.std(predictions) < 0.1 if predictions else False
 
     def _weighted_average(self, predictions: List[Dict[str, Any]]) -> float:
-        """
-        Compute the final team prediction using a confidence-weighted average.
-
-        Args:
-            predictions: List of prediction dictionaries from agents
-
-        Returns:
-            The final prediction value
-        """
-        total_weight = 0.0
-        weighted_sum = 0.0
-
-        for pred in predictions:
-            prediction = pred.get("prediction", 0.5)
-            confidence = pred.get("confidence", 0.0)
-
-            # Square the confidence to give more weight to high-confidence predictions
-            weight = confidence ** 2
-
-            weighted_sum += prediction * weight
-            total_weight += weight
-
-        # If no valid weights, return simple average
-        if total_weight == 0:
-            valid_predictions = [p.get("prediction", 0.5) for p in predictions]
-            return sum(valid_predictions) / len(valid_predictions) if valid_predictions else 0.5
-
-        return weighted_sum / total_weight
+        """Computes the final team prediction using a confidence-weighted average."""
+        weights = [p.get("confidence", 0.0) ** 2 for p in predictions]
+        preds = [p.get("prediction", 0.5) for p in predictions]
+        if sum(weights) == 0:
+            return np.mean(preds) if preds else 0.5
+        return np.average(preds, weights=weights)
 
     def run_discussion(self, question: List[str]) -> Dict[str, Any]:
-        """
-        Run the complete discussion process for an EHR prediction task.
-
-        Args:
-            question: The input question containing EHR data, formatted as a list of questions
-
-        Returns:
-            Dictionary with the final team prediction and discussion history
-        """
+        """Runs the complete discussion process for an EHR prediction task."""
         print(f"Starting EHR prediction discussion with {len(self.agents)} agents")
-        start_time = time.time()
-
         discussion_history = []
 
         # Phase 1: Initial predictions
-        print("Phase 1: Generating initial predictions")
-        current_predictions = []
-
-        for i, agent in enumerate(self.agents):
-            resp = agent.generate_initial_response(question[i])
-            current_predictions.append(resp)
-
-            # Add to discussion history
-            discussion_history.append({
-                "phase": DiscussionPhase.INITIAL.value,
-                "agent_id": agent.agent_id,
-                "response": resp
-            })
-
-            print(f"Agent {agent.agent_id} initial prediction: {resp.get('prediction', 0.5):.3f} (confidence: {resp.get('confidence', 0.0):.2f})")
+        current_predictions = [agent.generate_initial_response(q) for agent, q in zip(self.agents, question)]
+        discussion_history.extend([{"phase": DiscussionPhase.INITIAL.value, "agent_id": a.agent_id, "response": p} for a, p in zip(self.agents, current_predictions)])
 
         # Phase 2: Multi-round discussion
-        round_num = 0
-        consensus_reached = False
-
-        while round_num < self.max_rounds and not consensus_reached:
-            round_num += 1
+        for round_num in range(1, self.max_rounds + 1):
             print(f"Phase 2: Discussion round {round_num}/{self.max_rounds}")
-
-            # Prepare the discussion prompt based on previous predictions
             discussion_prompt = self._group_predictions(current_predictions)
 
-            # Each agent generates a new response
-            new_predictions = []
-            for i, agent in enumerate(self.agents):
-                resp = agent.generate_discussion_response(question[i], discussion_prompt)
-                new_predictions.append(resp)
+            new_predictions = [agent.generate_discussion_response(q, discussion_prompt) for agent, q in zip(self.agents, question)]
+            discussion_history.extend([{"phase": DiscussionPhase.DISCUSSION.value, "round": round_num, "agent_id": a.agent_id, "response": p} for a, p in zip(self.agents, new_predictions)])
 
-                # Add to discussion history
-                discussion_history.append({
-                    "phase": DiscussionPhase.DISCUSSION.value,
-                    "round": round_num,
-                    "agent_id": agent.agent_id,
-                    "response": resp
-                })
-
-                print(f"Agent {agent.agent_id} round {round_num} prediction: {resp.get('prediction', 0.5):.3f} (confidence: {resp.get('confidence', 0.0):.2f})")
-
-            # Update current predictions for next round
             current_predictions = new_predictions
-
-            # Check if consensus is reached
-            prediction_values = [p.get("prediction", 0.5) for p in current_predictions]
-            consensus_reached = self._consensus_threshold(prediction_values)
-            print(f"Round {round_num} consensus reached: {consensus_reached}")
-
-            if consensus_reached:
-                print("Consensus reached, ending discussion")
+            if self._consensus_reached([p.get("prediction", 0.5) for p in current_predictions]):
+                print("Consensus reached, ending discussion.")
                 break
 
-        # Phase 3: Final team prediction via weighted average
-        print("Phase 3: Generating final team prediction")
+        # Phase 3: Final team prediction
         final_prediction = self._weighted_average(current_predictions)
-
-        # Add final prediction to history
-        discussion_history.append({
-            "phase": DiscussionPhase.FINAL.value,
-            "final_prediction": final_prediction,
-            "consensus_reached": 1 if consensus_reached else 0,
-            "rounds_completed": round_num,
-            "individual_predictions": [p.get("prediction", 0.5) for p in current_predictions],
-            "confidence_scores": [p.get("confidence", 0.0) for p in current_predictions]
-        })
-
-        end_time = time.time()
-        processing_time = end_time - start_time
-
-        print(f"Discussion completed in {processing_time:.2f} seconds. Final prediction: {final_prediction:.3f}")
-
-        return {
-            "final_prediction": final_prediction,
-            "discussion_history": discussion_history,
-            "processing_time": processing_time
-        }
-
+        print(f"Final prediction: {final_prediction:.3f}")
+        return {"final_prediction": final_prediction, "discussion_history": discussion_history}
 
 class EvaluateAgent(ReconcileAgent):
-    """Evaluator Agent:
-    Evaluate the quality of the final patient report based on Factuality, Safety, and Explainability, using an LLM-as-a-judger approach.
-    Scores are on a scale of 1 to 5."""
+    """Evaluator Agent for assessing report quality."""
     def __init__(self, agent_id: str, model_key: str = "deepseek-v3-official"):
         super().__init__(agent_id, model_key)
 
-    def evaluate_preliminary_report(self, doctor_report: Dict[str, Any], final_report: Dict[str, Any], question: str, task_type: str) -> Dict[str, Any]:
-        """
-        Evaluate the quality of each DoctorAgent's preliminary report and its similarity to the final report, returning a score between 0 and 10.
-        """
-        system_message = {
-            "role": "system",
-            "content": f"{prompt_template.EVALUATE_SYSTEM}"
-        }
-        user_message = {
-            "role": "user",
-            "content": f"{prompt_template.EVALUATE_USER.format(question_short=question, doctor_explanation=doctor_report.get('explanation', ''), doctor_prediction=doctor_report.get('prediction', ''), final_explanation=final_report.get('explanation', ''), final_prediction=final_report.get('prediction', ''), task_type=task_type)}"
-        }
-        # Call LLM with retry mechanism
-        response_text = self.call_llm(system_message, user_message)
-
-        # Parse response
+    def evaluate_final_report(self, original_question: str, final_report_explanation: str, final_report_prediction: float, task_type: str, label: str) -> Dict[str, Any]:
+        """Evaluates the AI-generated final patient report for trustworthiness."""
+        system_message = {"role": "system", "content": prompt_template.REPORT_EVALUATOR_SYSTEM}
+        user_message = {"role": "user", "content": prompt_template.REPORT_EVALUATOR_USER.format(original_question=original_question, final_report=final_report_explanation, final_explanation=final_report_explanation, final_prediction=final_report_prediction, task_type=task_type, true_label=label)}
+        response_text = self.call_llm([system_message, user_message])
         try:
             result = json.loads(preprocess_response_string(response_text))
-            # Ensure score is a float between 0 and 10
-            if "score" in result:
-                try:
-                    score = float(result["score"])
-                    result["score"] = max(0.0, min(10.0, score))
-                except Exception:
-                    result["score"] = 0.0
-            else:
-                result["score"] = 0.0
-
-            result["system_message"] = system_message["content"]
-            result["user_message"] = user_message["content"]
-
-            # Add to memory
-            self.memory.append({
-                "type": "evaluation",
-                "content": result
-            })
-            return result
-        except json.JSONDecodeError:
-            lines = response_text.strip().split('\n')
-            result = {}
-
-            for line in lines:
-                if ":" in line:
-                    key, value = line.split(":", 1)
-                    key = key.strip().lower().replace("\"", "")
-                    value = value.strip()
-                    result[key] = value
-
-            if "score" not in result:
-                result["score"] = 0.0
-            if "reason" not in result:
-                result["reason"] = ""
-
-            result["response_text"] = response_text
-            return result
-
-    def evaluate_final_report(self,
-        original_question: str,
-        final_report_str: str,
-        final_report_explanation: str,
-        final_report_prediction: float,
-        task_type: str,
-        label: str) -> Dict[str, Any]:
-        """
-        Evaluate the AI-generated final patient report for trustworthiness dimensions.
-
-        Args:
-            original_question: The complete original input (EHR data + initial model predictions).
-            final_report_str: The final generated report.
-            final_report_explanation: The 'explanation' part of the final generated report.
-            final_report_prediction: The 'prediction' part of the final generated report.
-            task_type: Type of task (mortality, readmission or sptb).
-            label: True label of the patient under the task.
-
-        Returns:
-            Dictionary containing evaluation scores and reasons for Factuality, Safety,
-            and Explainability, plus an overall comment.
-        """
-        system_message = {
-            "role": "system",
-            "content": prompt_template.REPORT_EVALUATOR_SYSTEM
-        }
-        user_message = {
-            "role": "user",
-            "content": prompt_template.REPORT_EVALUATOR_USER.format(
-                original_question=original_question,
-                final_report=final_report_str,
-                final_explanation=final_report_explanation,
-                final_prediction=final_report_prediction,
-                task_type=task_type,
-                true_label=label
-            )
-        }
-
-        response_text = self.call_llm(system_message, user_message)
-
-        try:
-            # First attempt to parse as clean JSON
-            result = json.loads(preprocess_response_string(response_text))
-
-            # Validate and normalize scores (ensure between 1 and 5)
             for dim in ["accuracy", "explainability", "safety"]:
-                if dim in result and "score" in result[dim]:
-                    try:
-                        score = int(result[dim]["score"])
-                        result[dim]["score"] = max(1, min(5, score))
-                    except (ValueError, TypeError):
-                        result[dim]["score"] = 1 # Default to lowest if parsing fails
-                else:
-                    result[dim] = {"score": 1, "reason": "Missing or invalid score"}
-
-        except json.JSONDecodeError:
+                score = result.get(dim, {}).get("score", 1)
+                result[dim]["score"] = max(1, min(5, int(score)))
+        except (json.JSONDecodeError, ValueError, TypeError):
             result = parse_structured_output_for_final_report(response_text)
-        except Exception as e:
-            result = {
-                "accuracy": {"score": 1, "reason": f"Parsing error: {e}"},
-                "explainability": {"score": 1, "reason": f"Parsing error: {e}"},
-                "safety": {"score": 1, "reason": f"Parsing error: {e}"}
-            }
-        result["system_message"] = system_message["content"]
-        result["user_message"] = user_message["content"]
-        result["response_text"] = response_text
         return result
 
-
-def parse_structured_output_for_final_report(response_text: str) -> Dict[str, Any]:
-    """
-    Fallback parser for evaluation agent's response, extracting scores and reasons.
-    This is a simplified example; a more robust parser might be needed based on actual LLM output.
-    """
-    result = {
-        "accuracy": {"score": 1, "reason": "Could not parse reason."},
-        "safety": {"score": 1, "reason": "Could not parse reason."},
-        "explainability": {"score": 1, "reason": "Could not parse reason."},
-    }
-
-    # Simple regex-like extraction (not perfect for complex cases)
-    lines = response_text.split('\n')
-    current_dim = None
-
-    for line in lines:
-        line = line.strip()
-        if "accuracy:" in line.lower():
-            current_dim = "accuracy"
-        elif "safety:" in line.lower():
-            current_dim = "safety"
-        elif "explainability:" in line.lower():
-            current_dim = "explainability"
-
-        if current_dim:
-            if "score:" in line.lower():
-                try:
-                    score_str = line.split("score:", 1)[1].strip().split(" ")[0] # Get first number
-                    score = int(float(score_str)) # Handle floats like 4.0
-                    result[current_dim]["score"] = max(1, min(5, score))
-                except ValueError:
-                    pass
-            if "reason:" in line.lower():
-                reason = line.split("reason:", 1)[1].strip()
-                result[current_dim]["reason"] = reason
-
-    return result
-
-
-###############################################################################
-# Process a Single EHR Item with the Reconcile Framework
-###############################################################################
-def process_item(item: Dict[str, Any],
-               agent_configs: List[Dict[str, str]],
-               max_rounds: int = 3) -> Dict[str, Any]:
-    """
-    Process a single EHR item with the Reconcile framework.
-
-    Args:
-        item: Input EHR item dictionary (with qid, question, etc.)
-        agent_configs: List of agent configurations (each with agent_id and model_key)
-        max_rounds: Maximum number of discussion rounds
-
-    Returns:
-        Processed EHR result with the final predicted probability and discussion history
-    """
-    qid = item.get("qid", "unknown")
-    question = item.get("question", "")
-    ground_truth = item.get("answer")
-    start_time = time.time()
-
-    print(f"Processing EHR item {qid}")
-
-    # Create coordinator and run discussion
-    coordinator = ReconcileCoordinator(agent_configs, max_rounds)
-    discussion_result = coordinator.run_discussion(question)
-
-    # Calculate processing time
-    processing_time = time.time() - start_time
-    discussion_result["processing_time"] = processing_time
-
-    # Compile results
-    result = {
-        "qid": qid,
-        "question": question[-1],
-        "ground_truth": ground_truth,
-        "predicted_value": discussion_result["final_prediction"],
-        "case_history": discussion_result,
-        "timestamp": int(time.time()),
-        "processing_time": processing_time
-    }
-
-    return result
-
-
-###############################################################################
-# Main Entry Point for the Reconcile Framework on EHR data
-###############################################################################
 def main():
-    """
-    Main entry point for running the Reconcile framework on EHR datasets.
-    """
     parser = argparse.ArgumentParser(description="Run the Reconcile framework on EHR predictive modeling tasks")
     parser.add_argument("--dataset", "-d", type=str, required=True, help="Dataset name")
     parser.add_argument("--task", "-t", type=str, required=True, help="Prediction task")
     parser.add_argument("--agents", nargs='+', default=["deepseek-v3-official", "deepseek-v3-official", "deepseek-v3-official"], help="List of agent model keys")
     parser.add_argument("--max_rounds", type=int, default=2, help="Maximum number of discussion rounds")
-
     args = parser.parse_args()
+
+    # Setup directories and paths
     method = "ReConcile"
-
-    # Extract dataset name and task
-    dataset_name = args.dataset
-    task_name = args.task
-    print(f"Dataset: {dataset_name}, Task: {task_name}")
-
-    # Create logs directory structure
-    logs_dir = os.path.join("logs", "ehr", dataset_name, task_name, method)
+    logs_dir = os.path.join("logs", "ehr", args.dataset, args.task, method)
     os.makedirs(logs_dir, exist_ok=True)
-
-    # Construct the data path
-    data_path = os.path.join("my_datasets", "ehr", dataset_name, "processed", f"ehr_{task_name}_test.json")
-
-    # Load the dataset
+    data_path = os.path.join("my_datasets", "ehr", args.dataset, "processed", f"ehr_{args.task}_test.json")
     data = load_json(data_path)
     print(f"Loaded {len(data)} samples from {data_path}")
 
-    # Configure agents: each agent is assigned an ID and a model key
-    agent_configs = []
-    for idx, model_key in enumerate(args.agents, 1):
-        agent_configs.append({"agent_id": f"agent_{idx}", "model_key": model_key})
-
+    agent_configs = [{"agent_id": f"agent_{i+1}", "model_key": model_key} for i, model_key in enumerate(args.agents)]
     print(f"Configured {len(agent_configs)} agents: {[cfg['model_key'] for cfg in agent_configs]}")
 
-    # Process each item in the dataset
-    for item in tqdm(data, desc=f"Processing {dataset_name} ({task_name})"):
+    # Main processing loop
+    for item in tqdm(data, desc=f"Processing {args.dataset} ({args.task})"):
         qid = item.get("qid")
         result_path = os.path.join(logs_dir, f"ehr_{qid}-result.json")
-
-        # Skip already processed items
         if os.path.exists(result_path):
             print(f"Skipping {qid} (already processed)")
             continue
 
         try:
-            # Process the item
-            result = process_item(item, agent_configs, args.max_rounds)
+            start_time = time.time()
+            coordinator = ReconcileCoordinator(agent_configs, args.max_rounds)
+            discussion_result = coordinator.run_discussion(item["question"])
 
-            # Save result
+            result = {
+                "qid": qid, "question": item["question"][-1], "ground_truth": item.get("ground_truth"),
+                "predicted_value": discussion_result["final_prediction"],
+                "case_history": discussion_result, "processing_time": time.time() - start_time,
+                "timestamp": int(time.time())
+            }
             save_json(result, result_path)
-
         except Exception as e:
             print(f"Error processing item {qid}: {e}")
 
